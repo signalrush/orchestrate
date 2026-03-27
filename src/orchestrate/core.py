@@ -97,7 +97,7 @@ class Auto:
         """Register this program as a team via the API."""
         import urllib.request
         data = json.dumps({
-            "id": self._program_name or self._session_id,
+            "id": self._session_id,
             "name": self._program_name or "program",
             "session_id": self._session_id,
             "model": {"name": self._model, "model": self._model, "provider": "anthropic"},
@@ -112,8 +112,8 @@ class Auto:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
                 self._team_id = result.get("id")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[orchestrate] Warning: _register_team failed: {e}", flush=True)
 
     def _register_member(self, name: str):
         """Register a named agent as a team member via the API."""
@@ -129,8 +129,8 @@ class Auto:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
                 self._sessions[name]["api_session_id"] = result.get("session_id")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[orchestrate] Warning: _register_member({name}) failed: {e}", flush=True)
 
     def agent(self, name: str, cwd: str | None = None) -> None:
         """Declare a named agent. Optional — run() auto-creates on first use."""
@@ -151,7 +151,7 @@ class Auto:
             # Sub-agent: route through member's API session
             api_sid = self._sessions.get(to, {}).get("api_session_id")
             if api_sid:
-                return await self._remind_via_api(instruction, schema, session_id=api_sid, source=to)
+                return await self._remind_via_api(instruction, schema, session_id=api_sid, source="remind")
 
         # SDK mode: direct Agent SDK call
         if to not in self._sessions:

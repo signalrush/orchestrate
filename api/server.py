@@ -314,6 +314,7 @@ async def delete_session(session_id: str, db_id: str = Query("")):
     AUTOS.pop(session_id, None)
     SESSION_QUEUES.pop(session_id, None)
     SESSION_SSE.pop(session_id, None)
+    SESSION_TO_TEAM.pop(session_id, None)
     worker = SESSION_WORKERS.pop(session_id, None)
     if worker and not worker.done():
         worker.cancel()
@@ -463,10 +464,10 @@ async def register_team_member(team_id: str, request: Request):
 
     # Create session infrastructure for this member
     _ensure_session(member_session_id, team_id)
+    SESSIONS[member_session_id]["session_name"] = member_name
     SESSION_QUEUES[member_session_id] = asyncio.Queue()
-    # Member shares the team's SSE — no per-member SSE needed
-    # But _ensure_worker needs SESSION_SSE, so set it to team's
-    SESSION_SSE[member_session_id] = SESSION_SSE.get(team_id, asyncio.Queue())
+    # Give each member its own SSE queue so _emit's forwarding guard works correctly
+    SESSION_SSE[member_session_id] = asyncio.Queue()
 
     # Start worker for this member
     SESSION_WORKERS[member_session_id] = asyncio.create_task(
