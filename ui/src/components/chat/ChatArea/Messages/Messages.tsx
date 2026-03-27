@@ -62,6 +62,13 @@ const References: FC<ReferenceProps> = ({ references }) => (
 const AgentMessageWrapper = ({ message }: MessageWrapperProps) => {
   return (
     <div className="flex flex-col gap-y-9">
+      {message.member_name && (
+        <div className="flex items-center gap-2">
+          <span className="rounded-md bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent uppercase font-dmmono">
+            {message.member_name}
+          </span>
+        </div>
+      )}
       {message.extra_data?.reasoning_steps &&
         message.extra_data.reasoning_steps.length > 0 && (
           <div className="flex items-start gap-4">

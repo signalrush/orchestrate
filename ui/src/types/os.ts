@@ -200,6 +200,7 @@ export interface ChatMessage {
   streamingError?: boolean
   created_at: number
   tool_calls?: ToolCall[]
+  member_name?: string
   extra_data?: {
     reasoning_steps?: ReasoningSteps[]
     reasoning_messages?: ReasoningMessage[]

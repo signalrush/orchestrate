@@ -224,14 +224,16 @@ const useAIChatStreamHandler = () => {
                   newMessages.push({
                     role: role as any,
                     content: typeof chunk.content === 'string' ? chunk.content : '',
-                    created_at: chunk.created_at ?? Math.floor(Date.now() / 1000)
+                    created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+                    member_name: (chunk as any).member_name
                   })
                   newMessages.push({
                     role: 'agent',
                     content: '',
                     tool_calls: [],
                     streamingError: false,
-                    created_at: (chunk.created_at ?? Math.floor(Date.now() / 1000)) + 1
+                    created_at: (chunk.created_at ?? Math.floor(Date.now() / 1000)) + 1,
+                    member_name: (chunk as any).member_name
                   })
                   lastContent = ''
                   return newMessages
