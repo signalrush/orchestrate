@@ -150,8 +150,13 @@ class Auto:
                 return await self._remind_via_api(instruction, schema)
             # Sub-agent: route through member's API session
             api_sid = self._sessions.get(to, {}).get("api_session_id")
-            if api_sid:
-                return await self._remind_via_api(instruction, schema, session_id=api_sid, source="remind")
+            if not api_sid:
+                raise RuntimeError(
+                    f"[orchestrate] Sub-agent '{to}' has no API session — "
+                    "member registration failed. Check earlier warnings and "
+                    "ensure the API is reachable."
+                )
+            return await self._remind_via_api(instruction, schema, session_id=api_sid, source="remind")
 
         # SDK mode: direct Agent SDK call
         if to not in self._sessions:

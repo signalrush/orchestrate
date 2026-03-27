@@ -120,7 +120,7 @@ async def _process_message(message, source, agent_id, session_id, auto, run_id):
                 "Agent", "WebSearch", "WebFetch", "Skill",
             ],
             permission_mode="bypassPermissions",
-            model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-opus-4-6"),
+            model=auto._model,
             effort="max",
             resume=auto._sessions.get("self", {}).get("session_id"),
             setting_sources=["user"],
@@ -315,6 +315,24 @@ async def delete_session(session_id: str, db_id: str = Query("")):
     worker = SESSION_WORKERS.pop(session_id, None)
     if worker and not worker.done():
         worker.cancel()
+
+    # Clean up team if this session owns a team, cascading to all member sessions
+    team = TEAMS.pop(session_id, None)
+    if team:
+        for member in team.get("members", {}).values():
+            member_sid = member.get("session_id", "")
+            if not member_sid:
+                continue
+            SESSION_TO_TEAM.pop(member_sid, None)
+            SESSIONS.pop(member_sid, None)
+            RUNS.pop(member_sid, None)
+            AUTOS.pop(member_sid, None)
+            SESSION_QUEUES.pop(member_sid, None)
+            SESSION_SSE.pop(member_sid, None)
+            member_worker = SESSION_WORKERS.pop(member_sid, None)
+            if member_worker and not member_worker.done():
+                member_worker.cancel()
+
     return {"status": "deleted"}
 
 
@@ -463,8 +481,10 @@ async def register_team_member(team_id: str, request: Request):
     _ensure_session(member_session_id, team_id)
     SESSIONS[member_session_id]["session_name"] = member_name
     SESSION_QUEUES[member_session_id] = asyncio.Queue()
-    # Give each member its own SSE queue so _emit's forwarding guard works correctly
-    SESSION_SSE[member_session_id] = asyncio.Queue()
+    # Do NOT create a per-member SSE queue — members have no direct SSE consumer.
+    # _emit will forward events to the team SSE queue via SESSION_TO_TEAM routing.
+    # (Leaving SESSION_SSE[member_session_id] unset means sse=None in _emit,
+    #  so the forwarding guard `team_sse is not sse` is always True.)
 
     # Start worker for this member
     SESSION_WORKERS[member_session_id] = asyncio.create_task(
