@@ -2,11 +2,8 @@
 
 import ChatInput from './ChatInput'
 import MessageArea from './MessageArea'
-import useSessionPolling from '@/hooks/useSessionPolling'
 
 const ChatArea = () => {
-  useSessionPolling()
-
   return (
     <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
       <MessageArea />
