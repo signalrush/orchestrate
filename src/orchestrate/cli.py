@@ -80,7 +80,8 @@ class _LazyAuto:
             from orchestrate.core import Auto
             api_url = os.environ.get("ORCHESTRATE_API_URL")
             session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
-            self._real = Auto(api_url=api_url, session_id=session_id)
+            program_name = os.environ.get("ORCHESTRATE_PROGRAM_NAME")
+            self._real = Auto(api_url=api_url, session_id=session_id, program_name=program_name)
         return self._real
 
     def __getattr__(self, name: str):
@@ -158,11 +159,14 @@ def cmd_run(file_path: str) -> str:
     _write_run_json(run_id, data)
 
     log_fd = open(log_path, "w")
+    import os as _os
+    env = {**_os.environ, "ORCHESTRATE_PROGRAM_NAME": Path(abs_path).stem}
     proc = __import__("subprocess").Popen(
         [sys.executable, __file__, "_exec", abs_path, run_id, str(run_dir)],
         stdout=log_fd,
         stderr=log_fd,
         close_fds=True,
+        env=env,
     )
     log_fd.close()
 
