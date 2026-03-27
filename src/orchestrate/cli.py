@@ -264,9 +264,14 @@ def cmd_stop(run_id: str | None = None, stop_all: bool = False) -> None:
 
 
 def cmd_log(run_id: str) -> None:
-    """Tail the output.log for a run (replaces current process)."""
-    log_path = str(_run_dir(run_id) / "output.log")
-    os.execvp("tail", ["tail", "-f", "-n", "50", log_path])
+    """Show last 50 lines of output.log for a run (non-blocking)."""
+    log_path = _run_dir(run_id) / "output.log"
+    if not log_path.exists():
+        print(f"No log file for run {run_id}")
+        return
+    lines = log_path.read_text().splitlines()
+    for line in lines[-50:]:
+        print(line)
 
 
 # ---------------------------------------------------------------------------
