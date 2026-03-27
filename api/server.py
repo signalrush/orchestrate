@@ -187,10 +187,7 @@ async def _session_worker(session_id: str, agent_id: str):
     queue = SESSION_QUEUES[session_id]
     auto = _get_or_create_auto(session_id, agent_id)
     while True:
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=QUEUE_IDLE_TIMEOUT)
-        except asyncio.TimeoutError:
-            break
+        item = await queue.get()
         if item.get("type") == "done":
             continue  # program finished, but keep worker alive for follow-up messages
 
