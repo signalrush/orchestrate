@@ -1,8 +1,22 @@
 """orchestrate core — Auto class and helpers."""
 
 import json
+import os
 import re
 from typing import Any
+
+try:
+    from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, ResultMessage
+except ImportError:
+    query = None
+    ClaudeAgentOptions = None
+    AssistantMessage = None
+    ResultMessage = None
+
+ALL_TOOLS = [
+    "Read", "Edit", "Write", "Bash", "Glob", "Grep",
+    "Agent", "WebSearch", "WebFetch", "Skill",
+]
 
 
 def _parse_json(text: str, schema: dict) -> dict:
@@ -59,5 +73,52 @@ def _parse_json(text: str, schema: dict) -> dict:
 
 
 class Auto:
-    """Stub Auto class — full implementation in a later task."""
-    pass
+    """Orchestrate multiple Claude agents via the Agent SDK.
+
+    Each agent (including 'self') maintains its own session.
+    remind() sends to self. task() sends to a named agent.
+    """
+
+    def __init__(self, cwd: str | None = None, model: str = "claude-sonnet-4-6"):
+        self._sessions: dict[str, dict] = {}
+        self._cwd = cwd or os.getcwd()
+        self._model = model
+
+    def agent(self, name: str, cwd: str | None = None) -> None:
+        """Declare a named agent. Optional — task() auto-creates on first use."""
+        if name not in self._sessions:
+            self._sessions[name] = {
+                "session_id": None,
+                "cwd": cwd or self._cwd,
+            }
+
+    async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
+        """Send instruction to self. Alias for task(instruction, to='self')."""
+        return await self.task(instruction, to="self", schema=schema)
+
+    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
+        """Send instruction to a named agent. Accumulates session context."""
+        if to not in self._sessions:
+            self.agent(to)
+
+        agent = self._sessions[to]
+        opts = ClaudeAgentOptions(
+            allowed_tools=ALL_TOOLS,
+            permission_mode="bypassPermissions",
+            cwd=agent["cwd"],
+            model=self._model,
+            resume=agent["session_id"],
+        )
+
+        result_text = ""
+        async for msg in query(prompt=instruction, options=opts):
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if hasattr(block, "text"):
+                        result_text += block.text
+            elif isinstance(msg, ResultMessage):
+                agent["session_id"] = msg.session_id
+
+        if schema:
+            return _parse_json(result_text, schema)
+        return result_text
