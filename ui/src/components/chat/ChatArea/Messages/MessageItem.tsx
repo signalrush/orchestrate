@@ -74,9 +74,8 @@ const AgentMessage = ({ message }: MessageProps) => {
 
   return (
     <div className="flex flex-row items-start gap-4 font-geist">
-      <div className="flex items-center gap-1 flex-shrink-0">
+      <div className="flex-shrink-0">
         <Icon type="agent" size="sm" />
-        {timeStr && <span className="text-xs text-muted-foreground ml-2 whitespace-nowrap">{timeStr}</span>}
       </div>
       {messageContent}
     </div>

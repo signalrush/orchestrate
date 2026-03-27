@@ -381,19 +381,8 @@ async def run_agent(
             return
 
         while True:
-            try:
-                event_str = await asyncio.wait_for(sse.get(), timeout=QUEUE_IDLE_TIMEOUT)
-            except asyncio.TimeoutError:
-                return
-
+            event_str = await sse.get()
             yield event_str
-
-            # Stop on RunCompleted
-            try:
-                if json.loads(event_str).get("event") == "RunCompleted":
-                    return
-            except json.JSONDecodeError:
-                pass
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
