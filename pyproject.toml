@@ -13,3 +13,4 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
+api = ["fastapi", "uvicorn[standard]", "python-multipart"]
