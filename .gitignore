@@ -1,1 +1,3 @@
 ui/
+__pycache__/
+*egg-info/

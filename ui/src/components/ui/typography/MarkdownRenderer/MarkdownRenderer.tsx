@@ -1,7 +1,7 @@
 import { type FC } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
-import rehypeSanitize from 'rehype-sanitize'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 
 import { cn } from '@/lib/utils'
@@ -9,6 +9,19 @@ import { cn } from '@/lib/utils'
 import { type MarkdownRendererProps } from './types'
 import { inlineComponents } from './inlineStyles'
 import { components } from './styles'
+
+// Extend the default sanitize schema to preserve language classNames on code
+// elements so that syntax highlighting can detect the language.
+const sanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [
+      ...(defaultSchema.attributes?.code ?? []),
+      ['className', /^language-/]
+    ]
+  }
+}
 
 const MarkdownRenderer: FC<MarkdownRendererProps> = ({
   children,
@@ -22,7 +35,7 @@ const MarkdownRenderer: FC<MarkdownRendererProps> = ({
     )}
     components={{ ...(inline ? inlineComponents : components) }}
     remarkPlugins={[remarkGfm]}
-    rehypePlugins={[rehypeRaw, rehypeSanitize]}
+    rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
   >
     {children}
   </ReactMarkdown>
