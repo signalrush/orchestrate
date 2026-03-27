@@ -66,8 +66,11 @@ QUEUE_IDLE_TIMEOUT = 300  # 5 minutes
 
 def _get_or_create_auto(session_id: str, agent_id: str) -> Auto:
     if session_id not in AUTOS:
-        agent_config = AGENTS.get(agent_id, AGENTS["orchestrator"])
-        model = agent_config.get("model", {}).get("model", "claude-sonnet-4-6")
+        model = "claude-sonnet-4-6"
+        if agent_id in AGENTS:
+            model = AGENTS[agent_id].get("model", {}).get("model", model)
+        elif agent_id in TEAMS:
+            model = TEAMS[agent_id].get("model", {}).get("model", model)
         AUTOS[session_id] = Auto(model=model)
     return AUTOS[session_id]
 
@@ -86,10 +89,22 @@ def _ensure_session(session_id: str, agent_id: str) -> dict:
 
 
 def _emit(session_id: str, event: dict):
-    """Push event to the SSE output channel."""
+    """Push event to the SSE output channel. Forward to team SSE if member."""
     sse = SESSION_SSE.get(session_id)
     if sse:
         sse.put_nowait(json.dumps(event))
+
+    # Forward to team SSE with member_name tag
+    team_info = SESSION_TO_TEAM.get(session_id)
+    if team_info:
+        team_sse = SESSION_SSE.get(team_info["team_id"])
+        # Avoid double-emit if member SSE IS the team SSE
+        if team_sse and team_sse is not sse:
+            team_event = {**event, "member_name": team_info["member_name"]}
+            evt = team_event.get("event", "")
+            if evt and not evt.startswith("Team"):
+                team_event["event"] = "Team" + evt
+            team_sse.put_nowait(json.dumps(team_event))
 
 
 async def _process_message(message, source, agent_id, session_id, auto, run_id):
@@ -269,10 +284,16 @@ async def list_sessions(
     component_id: str = Query(""),
     db_id: str = Query(""),
 ):
-    sessions = [
-        s for s in SESSIONS.values()
-        if not component_id or s.get("agent_id") == component_id
-    ]
+    if type == "team" and component_id:
+        # Return sessions for team members
+        team = TEAMS.get(component_id, {})
+        member_session_ids = {m["session_id"] for m in team.get("members", {}).values()}
+        sessions = [s for s in SESSIONS.values() if s["session_id"] in member_session_ids]
+    else:
+        sessions = [
+            s for s in SESSIONS.values()
+            if not component_id or s.get("agent_id") == component_id
+        ]
     sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
     return {"data": sessions}
 
@@ -462,3 +483,40 @@ async def register_team_member(team_id: str, request: Request):
     }
 
     return {"session_id": member_session_id, "name": member_name}
+
+
+@app.post("/teams/{team_id}/runs")
+async def run_team(
+    team_id: str,
+    message: str = Form(""),
+    stream: str = Form("true"),
+    session_id: str = Form(""),
+):
+    if team_id not in TEAMS:
+        return JSONResponse({"error": "team not found"}, status_code=404)
+
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
+    run_id = str(uuid.uuid4())
+    now = int(time.time())
+
+    async def generate():
+        yield json.dumps({
+            "event": "TeamRunStarted",
+            "session_id": session_id,
+            "run_id": run_id,
+            "team_id": team_id,
+            "content_type": "text/plain",
+            "created_at": now,
+        })
+
+        sse = SESSION_SSE.get(team_id)
+        if not sse:
+            return
+
+        while True:
+            event_str = await sse.get()
+            yield event_str
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
