@@ -80,12 +80,57 @@ class Auto:
     """
 
     def __init__(self, cwd: str | None = None, model: str = "claude-sonnet-4-6",
-                 api_url: str | None = None, session_id: str | None = None):
+                 api_url: str | None = None, session_id: str | None = None,
+                 program_name: str | None = None):
         self._sessions: dict[str, dict] = {}
         self._cwd = cwd or os.getcwd()
         self._model = model
         self._api_url = api_url
         self._session_id = session_id
+        self._team_id: str | None = None
+        self._program_name = program_name
+
+        if self._api_url and self._session_id:
+            self._register_team()
+
+    def _register_team(self):
+        """Register this program as a team via the API."""
+        import urllib.request
+        data = json.dumps({
+            "id": self._program_name or self._session_id,
+            "name": self._program_name or "program",
+            "session_id": self._session_id,
+            "model": {"name": self._model, "model": self._model, "provider": "anthropic"},
+        }).encode()
+        req = urllib.request.Request(
+            f"{self._api_url}/teams",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+                self._team_id = result.get("id")
+        except Exception:
+            pass
+
+    def _register_member(self, name: str):
+        """Register a named agent as a team member via the API."""
+        import urllib.request
+        data = json.dumps({"name": name}).encode()
+        req = urllib.request.Request(
+            f"{self._api_url}/teams/{self._team_id}/members",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+                self._sessions[name]["api_session_id"] = result.get("session_id")
+        except Exception:
+            pass
 
     def agent(self, name: str, cwd: str | None = None) -> None:
         """Declare a named agent. Optional — run() auto-creates on first use."""
@@ -94,18 +139,24 @@ class Auto:
                 "session_id": None,
                 "cwd": cwd or self._cwd,
             }
+            if self._api_url and self._team_id:
+                self._register_member(name)
 
     async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
         """Send instruction to a named agent. Defaults to self. Accumulates session context."""
-        # API mode: POST to the API endpoint
-        if self._api_url and to == "self":
-            return await self._remind_via_api(instruction, schema)
+        # API mode: route through API
+        if self._api_url:
+            if to == "self":
+                return await self._remind_via_api(instruction, schema)
+            # Sub-agent: route through member's API session
+            api_sid = self._sessions.get(to, {}).get("api_session_id")
+            if api_sid:
+                return await self._remind_via_api(instruction, schema, session_id=api_sid, source=to)
 
         # SDK mode: direct Agent SDK call
         if to not in self._sessions:
             self.agent(to)
 
-        # Append JSON format instructions when schema is provided
         prompt = instruction
         if schema:
             schema_desc = json.dumps(schema, indent=2)
@@ -129,7 +180,6 @@ class Auto:
             elif isinstance(msg, ResultMessage):
                 agent["session_id"] = msg.session_id
 
-        # Log to stdout so orchestrate-run captures output
         print(f"[{to}] {result_text[:200]}", flush=True)
 
         if schema:
@@ -144,11 +194,13 @@ class Auto:
         """Deprecated. Use run(instruction, to=...) instead."""
         return await self.run(instruction, to=to, schema=schema)
 
-    async def _remind_via_api(self, instruction: str, schema: dict | None = None) -> str | dict:
-        """Send remind via HTTP POST to the session message endpoint."""
+    async def _remind_via_api(self, instruction: str, schema: dict | None = None,
+                              session_id: str | None = None, source: str = "remind") -> str | dict:
+        """Send message via HTTP POST to the session message endpoint."""
         import urllib.request
         import urllib.parse
 
+        target_session = session_id or self._session_id
         max_attempts = 3 if schema else 1
         last_error = None
 
@@ -161,13 +213,13 @@ class Auto:
 
             form_fields = {
                 "message": prompt,
-                "source": "remind",
+                "source": source,
             }
 
             data = urllib.parse.urlencode(form_fields).encode()
 
             req = urllib.request.Request(
-                f"{self._api_url}/sessions/{self._session_id}/message",
+                f"{self._api_url}/sessions/{target_session}/message",
                 data=data,
                 method="POST",
             )
@@ -182,7 +234,7 @@ class Auto:
             except json.JSONDecodeError:
                 result_text = body
 
-            print(f"[remind] {result_text[:200]}", flush=True)
+            print(f"[{source}] {result_text[:200]}", flush=True)
 
             if not schema:
                 return result_text
@@ -191,6 +243,6 @@ class Auto:
                 return _parse_json(result_text, schema)
             except ValueError as e:
                 last_error = e
-                print(f"[remind] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
+                print(f"[{source}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
 
         raise last_error
