@@ -1,0 +1,139 @@
+"""Tests for the REST API server (agent-ui compatibility)."""
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from api.server import app, AGENTS, SESSIONS, RUNS, AUTOS
+
+
+@pytest.fixture(autouse=True)
+def _reset_state():
+    """Reset in-memory stores between tests."""
+    SESSIONS.clear()
+    RUNS.clear()
+    AUTOS.clear()
+    # Restore default agent
+    AGENTS.clear()
+    AGENTS["orchestrator"] = {
+        "id": "orchestrator",
+        "name": "Orchestrate Agent",
+        "db_id": "default",
+        "model": {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    }
+
+
+@pytest.fixture
+def client():
+    transport = ASGITransport(app=app)
+    return AsyncClient(transport=transport, base_url="http://test")
+
+
+# ---- agent-ui compatibility: agent response shape ----
+
+@pytest.mark.asyncio
+async def test_agents_have_db_id(client):
+    """agent-ui requires db_id on agents to enable session switching.
+
+    Without db_id, the UI guard `if (!dbId) return` blocks session
+    loading, making it impossible to switch back to previous chats.
+    """
+    resp = await client.get("/agents")
+    assert resp.status_code == 200
+    agents = resp.json()
+    for agent in agents:
+        assert "db_id" in agent, f"agent {agent['id']} missing db_id"
+        assert agent["db_id"], f"agent {agent['id']} has empty db_id"
+
+
+@pytest.mark.asyncio
+async def test_agents_have_required_fields(client):
+    """agent-ui expects id, name, model on every agent."""
+    resp = await client.get("/agents")
+    agents = resp.json()
+    for agent in agents:
+        assert "id" in agent
+        assert "name" in agent
+        assert "model" in agent
+        assert "model" in agent["model"]
+        assert "provider" in agent["model"]
+
+
+@pytest.mark.asyncio
+async def test_registered_agent_has_db_id(client):
+    """Dynamically registered agents must also include db_id."""
+    resp = await client.post("/agents", json={"name": "test-agent"})
+    assert resp.status_code == 200
+    agent = resp.json()
+    assert "db_id" in agent
+    assert agent["db_id"]
+
+
+# ---- session endpoints ----
+
+@pytest.mark.asyncio
+async def test_sessions_returns_data_wrapper(client):
+    """agent-ui expects {data: [...]} from GET /sessions."""
+    resp = await client.get("/sessions", params={"type": "agent"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert isinstance(body["data"], list)
+
+
+@pytest.mark.asyncio
+async def test_session_runs_returns_array(client):
+    """agent-ui expects a flat array from GET /sessions/{id}/runs."""
+    resp = await client.get("/sessions/nonexistent/runs", params={"type": "agent"})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_session_runs_have_run_input_and_content(client):
+    """agent-ui reconstructs messages from run_input + content fields."""
+    # Seed a session with a run
+    sid = "test-session"
+    SESSIONS[sid] = {
+        "session_id": sid,
+        "session_name": "Test",
+        "agent_id": "orchestrator",
+        "created_at": 1000,
+        "updated_at": 1000,
+    }
+    RUNS[sid] = [
+        {"run_input": "hello", "content": "hi there", "tools": [], "created_at": 1000},
+    ]
+
+    resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
+    runs = resp.json()
+    assert len(runs) == 1
+    assert "run_input" in runs[0]
+    assert "content" in runs[0]
+    assert "created_at" in runs[0]
+
+
+# ---- health / teams ----
+
+@pytest.mark.asyncio
+async def test_health(client):
+    resp = await client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_teams_returns_empty_list(client):
+    resp = await client.get("/teams")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_session(client):
+    sid = "to-delete"
+    SESSIONS[sid] = {"session_id": sid}
+    RUNS[sid] = []
+    resp = await client.delete(f"/sessions/{sid}", params={"db_id": ""})
+    assert resp.status_code == 200
+    assert sid not in SESSIONS
+    assert sid not in RUNS

@@ -14,3 +14,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
 api = ["fastapi", "uvicorn[standard]", "python-multipart"]
+
+[project.scripts]
+orchestrate-run = "orchestrate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+pythonpath = ["."]
