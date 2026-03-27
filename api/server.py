@@ -179,6 +179,10 @@ async def run_agent(
                     model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-sonnet-4-6"),
                     resume=auto._sessions.get("self", {}).get("session_id"),
                     setting_sources=["user"],
+                    env={
+                        "ORCHESTRATE_API_URL": "http://localhost:7777",
+                        "ORCHESTRATE_SESSION_ID": session_id,
+                    },
                 ),
             ):
                 if isinstance(msg, AssistantMessage):
