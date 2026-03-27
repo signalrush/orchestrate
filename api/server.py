@@ -58,6 +58,9 @@ SESSION_QUEUES: dict[str, asyncio.Queue] = {}       # input: messages to process
 SESSION_SSE: dict[str, asyncio.Queue] = {}           # output: events pushed to stream
 SESSION_WORKERS: dict[str, asyncio.Task] = {}
 
+TEAMS: dict[str, dict] = {}
+SESSION_TO_TEAM: dict[str, dict] = {}  # session_id → {"team_id": str, "member_name": str}
+
 QUEUE_IDLE_TIMEOUT = 300  # 5 minutes
 
 
@@ -249,7 +252,15 @@ async def list_agents():
 
 @app.get("/teams")
 async def list_teams():
-    return []
+    return [
+        {
+            "id": t["id"],
+            "name": t.get("name", t["id"]),
+            "db_id": "default",
+            "model": t.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
+        }
+        for t in TEAMS.values()
+    ]
 
 
 @app.get("/sessions")
@@ -402,3 +413,52 @@ async def register_agent(request: Request):
         "model": data.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
     }
     return AGENTS[agent_id]
+
+
+@app.post("/teams")
+async def register_team(request: Request):
+    data = await request.json()
+    team_id = data.get("id", str(uuid.uuid4()))
+    session_id = data.get("session_id")  # the program's self session
+    TEAMS[team_id] = {
+        "id": team_id,
+        "name": data.get("name", team_id),
+        "model": data.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
+        "members": {},
+    }
+    # Create team SSE channel
+    SESSION_SSE[team_id] = asyncio.Queue()
+    # Map self session → team so its events also go to team SSE
+    if session_id:
+        SESSION_TO_TEAM[session_id] = {"team_id": team_id, "member_name": "self"}
+    return TEAMS[team_id]
+
+
+@app.post("/teams/{team_id}/members")
+async def register_team_member(team_id: str, request: Request):
+    data = await request.json()
+    member_name = data["name"]
+    member_session_id = str(uuid.uuid4())
+
+    # Create session infrastructure for this member
+    _ensure_session(member_session_id, team_id)
+    SESSION_QUEUES[member_session_id] = asyncio.Queue()
+    # Member shares the team's SSE — no per-member SSE needed
+    # But _ensure_worker needs SESSION_SSE, so set it to team's
+    SESSION_SSE[member_session_id] = SESSION_SSE.get(team_id, asyncio.Queue())
+
+    # Start worker for this member
+    SESSION_WORKERS[member_session_id] = asyncio.create_task(
+        _session_worker(member_session_id, team_id)
+    )
+
+    # Map member session → team
+    SESSION_TO_TEAM[member_session_id] = {"team_id": team_id, "member_name": member_name}
+
+    # Store in team
+    TEAMS[team_id]["members"][member_name] = {
+        "name": member_name,
+        "session_id": member_session_id,
+    }
+
+    return {"session_id": member_session_id, "name": member_name}
