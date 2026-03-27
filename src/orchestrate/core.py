@@ -166,20 +166,13 @@ class Auto:
         with urllib.request.urlopen(req) as resp:
             body = resp.read().decode()
 
-        # Parse concatenated JSON events to find RunCompleted content
+        # Remind endpoint returns JSON: {"content": "...", "status": "ok"}
         result_text = ""
-        for line in body.split("}{"):
-            chunk = line
-            if not chunk.startswith("{"):
-                chunk = "{" + chunk
-            if not chunk.endswith("}"):
-                chunk = chunk + "}"
-            try:
-                event = json.loads(chunk)
-                if event.get("event") == "RunCompleted":
-                    result_text = event.get("content", "")
-            except json.JSONDecodeError:
-                continue
+        try:
+            result = json.loads(body)
+            result_text = result.get("content", "")
+        except json.JSONDecodeError:
+            result_text = body
 
         print(f"[remind] {result_text[:200]}", flush=True)
 

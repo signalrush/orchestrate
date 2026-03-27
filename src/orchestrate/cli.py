@@ -119,6 +119,20 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
         data["error"] = str(exc)
     finally:
         (run_dir / "run.json").write_text(json.dumps(data))
+        # Signal the API that the program is done (closes the stream)
+        api_url = os.environ.get("ORCHESTRATE_API_URL")
+        session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
+        if api_url and session_id:
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    f"{api_url}/sessions/{session_id}/program-done",
+                    method="POST",
+                    data=b"",
+                )
+                urllib.request.urlopen(req, timeout=5)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
