@@ -13,7 +13,7 @@ from fastapi import FastAPI, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from orchestrate.core import Auto, _parse_json
+from orchestrate.core import Orchestrate, _parse_json
 
 # Load OAuth token if available
 try:
@@ -51,7 +51,7 @@ AGENTS: dict[str, dict] = {
 
 SESSIONS: dict[str, dict] = {}
 RUNS: dict[str, list] = {}
-AUTOS: dict[str, Auto] = {}
+ORCHESTRATORS: dict[str, Orchestrate] = {}
 
 # Per-session queue + worker + SSE output channel
 SESSION_QUEUES: dict[str, asyncio.Queue] = {}       # input: messages to process
@@ -64,15 +64,15 @@ SESSION_TO_TEAM: dict[str, dict] = {}  # session_id → {"team_id": str, "member
 QUEUE_IDLE_TIMEOUT = 300  # 5 minutes
 
 
-def _get_or_create_auto(session_id: str, agent_id: str) -> Auto:
-    if session_id not in AUTOS:
+def _get_or_create_auto(session_id: str, agent_id: str) -> Orchestrate:
+    if session_id not in ORCHESTRATORS:
         model = "claude-sonnet-4-6"
         if agent_id in AGENTS:
             model = AGENTS[agent_id].get("model", {}).get("model", model)
         elif agent_id in TEAMS:
             model = TEAMS[agent_id].get("model", {}).get("model", model)
-        AUTOS[session_id] = Auto(model=model)
-    return AUTOS[session_id]
+        ORCHESTRATORS[session_id] = Orchestrate(model=model)
+    return ORCHESTRATORS[session_id]
 
 
 def _ensure_session(session_id: str, agent_id: str) -> dict:
@@ -308,7 +308,7 @@ async def get_session_runs(
 async def delete_session(session_id: str, db_id: str = Query("")):
     SESSIONS.pop(session_id, None)
     RUNS.pop(session_id, None)
-    AUTOS.pop(session_id, None)
+    ORCHESTRATORS.pop(session_id, None)
     SESSION_QUEUES.pop(session_id, None)
     SESSION_SSE.pop(session_id, None)
     SESSION_TO_TEAM.pop(session_id, None)
@@ -326,7 +326,7 @@ async def delete_session(session_id: str, db_id: str = Query("")):
             SESSION_TO_TEAM.pop(member_sid, None)
             SESSIONS.pop(member_sid, None)
             RUNS.pop(member_sid, None)
-            AUTOS.pop(member_sid, None)
+            ORCHESTRATORS.pop(member_sid, None)
             SESSION_QUEUES.pop(member_sid, None)
             SESSION_SSE.pop(member_sid, None)
             member_worker = SESSION_WORKERS.pop(member_sid, None)

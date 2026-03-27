@@ -5,13 +5,13 @@ description: Run yourself in a loop with programmatic control via the Agent SDK.
 
 # Orchestrate
 
-Write a Python program that drives agent execution. The program is your body — `auto.run()` is how you think. You write the loop, it keeps you alive.
+Write a Python program that drives agent execution. The program is your body — `orch.run()` is how you think. You write the loop, it keeps you alive.
 
-A single program can efficiently coordinate 100+ agents — fan out work with `asyncio.gather`, manage worker pools with queues, and stay in control through structured `auto.run()` decisions. The only limit is how well you design the program.
+A single program can efficiently coordinate 100+ agents — fan out work with `asyncio.gather`, manage worker pools with queues, and stay in control through structured `orch.run()` decisions. The only limit is how well you design the program.
 
 ## Launch
 
-1. Write `async def main(auto):`
+1. Write `async def main(orch):`
 2. Run: `orchestrate-run <file.py>`
 
 **CRITICAL: After `orchestrate-run`, STOP. Do not monitor, tail logs, or wait. Your turn is done. The program handles the rest.**
@@ -22,13 +22,13 @@ There is one primitive. Everything else is Python.
 
 ```python
 # Talk to yourself — you see results, you steer decisions
-result = await auto.run("analyze the test results")
+result = await orch.run("analyze the test results")
 
 # Get structured data back to drive program logic
-result = await auto.run("decide next step", schema={"action": "str", "done": "bool"})
+result = await orch.run("decide next step", schema={"action": "str", "done": "bool"})
 
 # Dispatch to another agent
-code = await auto.run("implement feature X", to="coder")
+code = await orch.run("implement feature X", to="coder")
 ```
 
 Concurrency is just `asyncio`:
@@ -36,8 +36,8 @@ Concurrency is just `asyncio`:
 ```python
 # Parallel fan-out — independent work runs simultaneously
 results = await asyncio.gather(
-    auto.run("research approach A", to="researcher-1"),
-    auto.run("research approach B", to="researcher-2"),
+    orch.run("research approach A", to="researcher-1"),
+    orch.run("research approach B", to="researcher-2"),
 )
 
 # Work queue — just asyncio.Queue
@@ -48,32 +48,32 @@ queue = asyncio.Queue()
 
 ### Stay in the loop
 
-You are the brain. The program is the clock. `auto.run()` is the nerve. If you don't call `auto.run()`, you're blind.
+You are the brain. The program is the clock. `orch.run()` is the nerve. If you don't call `orch.run()`, you're blind.
 
 Bad — fire and forget, you have no idea what happened:
 ```python
-async def main(auto):
+async def main(orch):
     for task in tasks:
-        await auto.run(task, to="worker")
+        await orch.run(task, to="worker")
 ```
 
 Good — you see results, you steer:
 ```python
-async def main(auto):
+async def main(orch):
     for task in tasks:
-        result = await auto.run(task, to="worker")
-        review = await auto.run(f"Review this result: {result}. Is it good enough?",
+        result = await orch.run(task, to="worker")
+        review = await orch.run(f"Review this result: {result}. Is it good enough?",
                                 schema={"approved": "bool", "feedback": "str"})
         if not review["approved"]:
-            await auto.run(f"Fix based on feedback: {review['feedback']}", to="worker")
+            await orch.run(f"Fix based on feedback: {review['feedback']}", to="worker")
 ```
 
 Best — you control the entire loop through structured decisions:
 ```python
-async def main(auto):
+async def main(orch):
     instruction = "Survey ~/tasks/queue/ and make a plan."
     while True:
-        decision = await auto.run(instruction, schema={
+        decision = await orch.run(instruction, schema={
             "done": "bool",
             "next_action": "str",
             "delegate_to": "str | null",
@@ -81,7 +81,7 @@ async def main(auto):
         if decision["done"]:
             break
         if decision["delegate_to"]:
-            result = await auto.run(decision["next_action"], to=decision["delegate_to"])
+            result = await orch.run(decision["next_action"], to=decision["delegate_to"])
             instruction = f"Agent '{decision['delegate_to']}' returned: {result}\nWhat next?"
         else:
             instruction = decision["next_action"]
@@ -91,17 +91,17 @@ async def main(auto):
 
 If tasks are independent, run them concurrently:
 ```python
-async def main(auto):
+async def main(orch):
     # Sequential — slow (each waits for the previous)
-    r1 = await auto.run("fix bug A", to="coder")
-    r2 = await auto.run("fix bug B", to="coder")
-    r3 = await auto.run("fix bug C", to="coder")
+    r1 = await orch.run("fix bug A", to="coder")
+    r2 = await orch.run("fix bug B", to="coder")
+    r3 = await orch.run("fix bug C", to="coder")
 
     # Parallel — fast (all run at once on different agents)
     r1, r2, r3 = await asyncio.gather(
-        auto.run("fix bug A", to="coder-1"),
-        auto.run("fix bug B", to="coder-2"),
-        auto.run("fix bug C", to="coder-3"),
+        orch.run("fix bug A", to="coder-1"),
+        orch.run("fix bug B", to="coder-2"),
+        orch.run("fix bug C", to="coder-3"),
     )
 ```
 
@@ -112,12 +112,12 @@ With schema, you get structured data — drives decisions cleanly.
 
 ```python
 # Free text — fragile
-result = await auto.run("is the build passing?")
+result = await orch.run("is the build passing?")
 if "yes" in result.lower():  # brittle string matching
     ...
 
 # Structured — reliable
-result = await auto.run("check build status", schema={
+result = await orch.run("check build status", schema={
     "passing": "bool",
     "failures": "int",
     "summary": "str",
@@ -129,11 +129,11 @@ if result["passing"]:  # clean
 ### Configure agents for different roles
 
 ```python
-auto.agent("coder", cwd="/project")
-auto.agent("reviewer", cwd="/project")
+orch.agent("coder", cwd="/project")
+orch.agent("reviewer", cwd="/project")
 
-code = await auto.run("implement the feature", to="coder")
-review = await auto.run(f"review this:\n{code}", to="reviewer")
+code = await orch.run("implement the feature", to="coder")
+review = await orch.run(f"review this:\n{code}", to="reviewer")
 ```
 
 ## Manage runs

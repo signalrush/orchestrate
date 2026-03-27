@@ -1,4 +1,4 @@
-"""orchestrate core — Auto class and helpers."""
+"""orchestrate core — Orchestrate class and helpers."""
 
 import json
 import os
@@ -72,7 +72,7 @@ def _parse_json(text: str, schema: dict) -> dict:
     raise ValueError(f"No valid JSON found in response: {text[:200]}")
 
 
-class Auto:
+class Orchestrate:
     """Orchestrate multiple Claude agents via the Agent SDK.
 
     Each agent (including 'self') maintains its own session.
@@ -251,3 +251,6 @@ class Auto:
                 print(f"[{source}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
 
         raise last_error
+
+
+Auto = Orchestrate  # deprecated alias

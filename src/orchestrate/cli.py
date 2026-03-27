@@ -69,19 +69,19 @@ def _elapsed(start_time: float) -> str:
 # Internal _exec command — runs inside the background subprocess
 # ---------------------------------------------------------------------------
 
-class _LazyAuto:
-    """Proxy that imports and instantiates orchestrate.core.Auto on first use."""
+class _LazyOrchestrate:
+    """Proxy that imports and instantiates orchestrate.core.Orchestrate on first use."""
 
     def __init__(self) -> None:
         self._real: object | None = None
 
     def _get(self) -> object:
         if self._real is None:
-            from orchestrate.core import Auto
+            from orchestrate.core import Orchestrate
             api_url = os.environ.get("ORCHESTRATE_API_URL")
             session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
             program_name = os.environ.get("ORCHESTRATE_PROGRAM_NAME")
-            self._real = Auto(api_url=api_url, session_id=session_id, program_name=program_name)
+            self._real = Orchestrate(api_url=api_url, session_id=session_id, program_name=program_name)
         return self._real
 
     def __getattr__(self, name: str):
@@ -105,7 +105,7 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
         sig = inspect.signature(main_fn)
         params = list(sig.parameters.keys())
 
-        auto = _LazyAuto()
+        auto = _LazyOrchestrate()
 
         if params:
             coro = main_fn(auto)
