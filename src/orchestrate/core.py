@@ -141,41 +141,52 @@ class Auto:
         return result_text
 
     async def _remind_via_api(self, instruction: str, schema: dict | None = None) -> str | dict:
-        """Send remind via HTTP POST to the API server."""
+        """Send remind via HTTP POST to the session message endpoint."""
         import urllib.request
         import urllib.parse
 
-        prompt = instruction
-        if schema:
-            schema_desc = json.dumps(schema, indent=2)
-            prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
+        max_attempts = 3 if schema else 1
+        last_error = None
 
-        data = urllib.parse.urlencode({
-            "message": prompt,
-            "stream": "false",
-            "session_id": self._session_id or "",
-            "source": "remind",
-        }).encode()
+        for attempt in range(max_attempts):
+            prompt = instruction
+            if schema and attempt > 0:
+                schema_desc = json.dumps(schema, indent=2)
+                prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
+                           f"Keys and types:\n{schema_desc}")
 
-        req = urllib.request.Request(
-            f"{self._api_url}/agents/orchestrator/runs",
-            data=data,
-            method="POST",
-        )
+            form_fields = {
+                "message": prompt,
+                "source": "remind",
+            }
 
-        with urllib.request.urlopen(req) as resp:
-            body = resp.read().decode()
+            data = urllib.parse.urlencode(form_fields).encode()
 
-        # Remind endpoint returns JSON: {"content": "...", "status": "ok"}
-        result_text = ""
-        try:
-            result = json.loads(body)
-            result_text = result.get("content", "")
-        except json.JSONDecodeError:
-            result_text = body
+            req = urllib.request.Request(
+                f"{self._api_url}/sessions/{self._session_id}/message",
+                data=data,
+                method="POST",
+            )
 
-        print(f"[remind] {result_text[:200]}", flush=True)
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                body = resp.read().decode()
 
-        if schema:
-            return _parse_json(result_text, schema)
-        return result_text
+            result_text = ""
+            try:
+                result = json.loads(body)
+                result_text = result.get("content", "")
+            except json.JSONDecodeError:
+                result_text = body
+
+            print(f"[remind] {result_text[:200]}", flush=True)
+
+            if not schema:
+                return result_text
+
+            try:
+                return _parse_json(result_text, schema)
+            except ValueError as e:
+                last_error = e
+                print(f"[remind] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
+
+        raise last_error

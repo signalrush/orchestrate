@@ -108,34 +108,7 @@ const useAIChatStreamHandler = () => {
         formData.append('message', input)
       }
 
-      setMessages((prevMessages) => {
-        if (prevMessages.length >= 2) {
-          const lastMessage = prevMessages[prevMessages.length - 1]
-          const secondLastMessage = prevMessages[prevMessages.length - 2]
-          if (
-            lastMessage.role === 'agent' &&
-            lastMessage.streamingError &&
-            secondLastMessage.role === 'user'
-          ) {
-            return prevMessages.slice(0, -2)
-          }
-        }
-        return prevMessages
-      })
-
-      addMessage({
-        role: 'user',
-        content: formData.get('message') as string,
-        created_at: Math.floor(Date.now() / 1000)
-      })
-
-      addMessage({
-        role: 'agent',
-        content: '',
-        tool_calls: [],
-        streamingError: false,
-        created_at: Math.floor(Date.now() / 1000) + 1
-      })
+      // Don't create local bubbles — server source markers handle all bubble creation
 
       let lastContent = ''
       let newSessionId = sessionId
@@ -222,6 +195,35 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.RunContent ||
               chunk.event === RunEvent.TeamRunContent
             ) {
+              // Handle source-tagged events: create bubble + agent bubble
+              if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
+                const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
+                setMessages((prevMessages) => {
+                  const newMessages = [...prevMessages]
+                  // Dedup: if a local user bubble already exists, skip creating another
+                  const lastMsg = newMessages[newMessages.length - 1]
+                  const alreadyLocal = role === 'user' && lastMsg && lastMsg.role === 'user' && (lastMsg as any)._local
+                  if (alreadyLocal) {
+                    delete (lastMsg as any)._local
+                  } else {
+                    newMessages.push({
+                      role: role as any,
+                      content: typeof chunk.content === 'string' ? chunk.content : '',
+                      created_at: chunk.created_at ?? Math.floor(Date.now() / 1000)
+                    })
+                  }
+                  newMessages.push({
+                    role: 'agent',
+                    content: '',
+                    tool_calls: [],
+                    streamingError: false,
+                    created_at: (chunk.created_at ?? Math.floor(Date.now() / 1000)) + 1
+                  })
+                  lastContent = ''
+                  return newMessages
+                })
+                return
+              }
               setMessages((prevMessages) => {
                 const newMessages = [...prevMessages]
                 const lastMessage = newMessages[newMessages.length - 1]
@@ -358,14 +360,16 @@ const useAIChatStreamHandler = () => {
                     index === prevMessages.length - 1 &&
                     message.role === 'agent'
                   ) {
-                    let updatedContent: string
-                    if (typeof chunk.content === 'string') {
+                    // Keep existing content if RunCompleted has empty content
+                    // (content was already delivered via RunContent events)
+                    let updatedContent: string = message.content
+                    if (typeof chunk.content === 'string' && chunk.content) {
                       updatedContent = chunk.content
-                    } else {
+                    } else if (chunk.content && typeof chunk.content !== 'string') {
                       try {
                         updatedContent = JSON.stringify(chunk.content)
                       } catch {
-                        updatedContent = 'Error parsing response'
+                        // keep existing
                       }
                     }
                     return {

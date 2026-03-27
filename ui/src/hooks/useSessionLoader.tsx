@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { getSessionAPI, getAllSessionsAPI } from '@/api/os'
 import { useStore } from '../store'
 import { toast } from 'sonner'
@@ -28,6 +28,12 @@ const useSessionLoader = () => {
   const setMessages = useStore((state) => state.setMessages)
   const selectedEndpoint = useStore((state) => state.selectedEndpoint)
   const authToken = useStore((state) => state.authToken)
+  const isStreaming = useStore((state) => state.isStreaming)
+  const messages = useStore((state) => state.messages)
+  const streamingRef = useRef(false)
+  streamingRef.current = isStreaming
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
   const setIsSessionsLoading = useStore((state) => state.setIsSessionsLoading)
   const setSessionsData = useStore((state) => state.setSessionsData)
 
@@ -62,6 +68,14 @@ const useSessionLoader = () => {
       { entityType, agentId, teamId, dbId }: LoaderArgs,
       sessionId: string
     ) => {
+      // Don't overwrite streaming messages with stale API data
+      // (only guard the session currently being streamed, not switches to other sessions)
+      if (streamingRef.current && messagesRef.current.length > 0) {
+        // Check if we're loading the same session that's streaming
+        const currentUserMsg = messagesRef.current.find(m => m.role === 'user')
+        if (currentUserMsg) return
+      }
+
       const selectedId = entityType === 'agent' ? agentId : teamId
       if (
         !selectedEndpoint ||

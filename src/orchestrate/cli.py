@@ -119,7 +119,7 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
         data["error"] = str(exc)
     finally:
         (run_dir / "run.json").write_text(json.dumps(data))
-        # Signal the API that the program is done (closes the stream)
+        # Signal the API that the program is done
         api_url = os.environ.get("ORCHESTRATE_API_URL")
         session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
         if api_url and session_id:
@@ -170,6 +170,7 @@ def cmd_run(file_path: str) -> str:
     _write_run_json(run_id, data)
 
     print(f"Started run {run_id}  log: {log_path}")
+    print("Program running in background. STOP HERE — do not monitor or wait. The program will send remind messages through the queue.")
     return run_id
 
 

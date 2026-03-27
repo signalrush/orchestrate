@@ -8,11 +8,10 @@ import json
 import os
 import time
 import uuid
-from typing import Optional
 
 from fastapi import FastAPI, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from orchestrate.core import Auto, _parse_json
 
@@ -46,7 +45,7 @@ AGENTS: dict[str, dict] = {
         "id": "orchestrator",
         "name": "Orchestrate Agent",
         "db_id": "default",
-        "model": {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+        "model": {"name": "claude-opus-4-6", "model": "claude-opus-4-6", "provider": "anthropic"},
     }
 }
 
@@ -54,13 +53,12 @@ SESSIONS: dict[str, dict] = {}
 RUNS: dict[str, list] = {}
 AUTOS: dict[str, Auto] = {}
 
-# Per-session event queues: remind() pushes events here, the active stream yields them
-SESSION_QUEUES: dict[str, asyncio.Queue] = {}
+# Per-session queue + worker + SSE output channel
+SESSION_QUEUES: dict[str, asyncio.Queue] = {}       # input: messages to process
+SESSION_SSE: dict[str, asyncio.Queue] = {}           # output: events pushed to stream
+SESSION_WORKERS: dict[str, asyncio.Task] = {}
 
-# Timeout waiting for first remind event after agent turn (seconds)
-WAIT_FOR_PROGRAM_TIMEOUT = 15
-# Timeout between remind events once started (seconds)
-BETWEEN_REMIND_TIMEOUT = 120
+QUEUE_IDLE_TIMEOUT = 300  # 5 minutes
 
 
 def _get_or_create_auto(session_id: str, agent_id: str) -> Auto:
@@ -84,8 +82,15 @@ def _ensure_session(session_id: str, agent_id: str) -> dict:
     return SESSIONS[session_id]
 
 
-async def _run_agent_query(message, agent_id, session_id, auto, queue, run_id, source):
-    """Run an Agent SDK query and yield streaming events. Pushes events to queue too."""
+def _emit(session_id: str, event: dict):
+    """Push event to the SSE output channel."""
+    sse = SESSION_SSE.get(session_id)
+    if sse:
+        sse.put_nowait(json.dumps(event))
+
+
+async def _process_message(message, source, agent_id, session_id, auto, run_id):
+    """Run an Agent SDK query. Appends events directly to SESSION_EVENTS."""
     accumulated_text = ""
     tools_used = []
 
@@ -97,7 +102,8 @@ async def _run_agent_query(message, agent_id, session_id, auto, queue, run_id, s
                 "Agent", "WebSearch", "WebFetch", "Skill",
             ],
             permission_mode="bypassPermissions",
-            model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-sonnet-4-6"),
+            model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-opus-4-6"),
+            effort="max",
             resume=auto._sessions.get("self", {}).get("session_id"),
             setting_sources=["user"],
             env={
@@ -109,7 +115,17 @@ async def _run_agent_query(message, agent_id, session_id, auto, queue, run_id, s
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if hasattr(block, "text"):
+                    if accumulated_text and not accumulated_text[-1].isspace() and block.text and not block.text[0].isspace():
+                        accumulated_text += " "
                     accumulated_text += block.text
+                    _emit(session_id, {
+                        "event": "RunContent",
+                        "content": accumulated_text,
+                        "content_type": "text/plain",
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "created_at": int(time.time()),
+                    })
                 elif hasattr(block, "name"):
                     tool_record = {
                         "role": "tool",
@@ -122,6 +138,14 @@ async def _run_agent_query(message, agent_id, session_id, auto, queue, run_id, s
                         "created_at": int(time.time()),
                     }
                     tools_used.append(tool_record)
+                    _emit(session_id, {
+                        "event": "ToolCallStarted",
+                        "tools": [tool_record],
+                        "content_type": "text/plain",
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "created_at": int(time.time()),
+                    })
         elif isinstance(msg, ResultMessage):
             if "self" not in auto._sessions:
                 auto.agent("self")
@@ -137,7 +161,67 @@ async def _run_agent_query(message, agent_id, session_id, auto, queue, run_id, s
     })
     SESSIONS[session_id]["updated_at"] = int(time.time())
 
-    return accumulated_text, tools_used
+    return accumulated_text
+
+
+async def _session_worker(session_id: str, agent_id: str):
+    """Background worker: pulls from queue, processes sequentially."""
+    queue = SESSION_QUEUES[session_id]
+    auto = _get_or_create_auto(session_id, agent_id)
+    while True:
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=QUEUE_IDLE_TIMEOUT)
+        except asyncio.TimeoutError:
+            break
+        if item.get("type") == "done":
+            break
+
+        item_source = item["source"]
+        item_message = item["message"]
+        item_future = item.get("future")
+        item_run_id = str(uuid.uuid4())
+
+        # Emit source marker — UI creates the bubble
+        _emit(session_id, {
+            "event": "RunContent",
+            "content": item_message,
+            "content_type": "text/plain",
+            "source": item_source,
+            "session_id": session_id,
+            "run_id": item_run_id,
+            "created_at": int(time.time()),
+        })
+
+        # Process sequentially
+        response_text = await _process_message(
+            item_message, item_source, agent_id, session_id, auto, item_run_id
+        )
+
+        if item_future and not item_future.done():
+            item_future.set_result(response_text)
+
+    _emit(session_id, {
+        "event": "RunCompleted",
+        "content": "",
+        "content_type": "text/plain",
+        "session_id": session_id,
+        "run_id": "",
+        "created_at": int(time.time()),
+    })
+
+    SESSION_WORKERS.pop(session_id, None)
+
+
+def _ensure_worker(session_id: str, agent_id: str):
+    """Start a background worker for this session if one isn't running."""
+    if session_id not in SESSION_WORKERS or SESSION_WORKERS[session_id].done():
+        if session_id not in SESSION_QUEUES:
+            SESSION_QUEUES[session_id] = asyncio.Queue()
+        if session_id not in SESSION_SSE:
+            SESSION_SSE[session_id] = asyncio.Queue()
+        SESSION_WORKERS[session_id] = asyncio.create_task(
+            _session_worker(session_id, agent_id)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -186,10 +270,53 @@ async def get_session_runs(
 async def delete_session(session_id: str, db_id: str = Query("")):
     SESSIONS.pop(session_id, None)
     RUNS.pop(session_id, None)
-    if session_id in AUTOS:
-        del AUTOS[session_id]
+    AUTOS.pop(session_id, None)
+    SESSION_QUEUES.pop(session_id, None)
+    SESSION_SSE.pop(session_id, None)
+    worker = SESSION_WORKERS.pop(session_id, None)
+    if worker and not worker.done():
+        worker.cancel()
     return {"status": "deleted"}
 
+
+# ---------------------------------------------------------------------------
+# Queue-based message endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/sessions/{session_id}/message")
+async def post_message(
+    session_id: str,
+    message: str = Form(...),
+    source: str = Form("user"),
+):
+    """Push a message to the session queue. Blocks until processed, returns response."""
+    if session_id not in SESSION_QUEUES:
+        return JSONResponse({"error": "no active stream for session"}, status_code=400)
+
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+
+    await SESSION_QUEUES[session_id].put({
+        "message": message,
+        "source": source,
+        "future": future,
+    })
+
+    result = await future
+    return JSONResponse({"content": result, "status": "ok"})
+
+
+@app.post("/sessions/{session_id}/program-done")
+async def program_done(session_id: str):
+    """Signal that the orchestrate program has finished."""
+    if session_id in SESSION_QUEUES:
+        await SESSION_QUEUES[session_id].put({"type": "done"})
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Stream endpoint — just reads from the event log
+# ---------------------------------------------------------------------------
 
 @app.post("/agents/{agent_id}/runs")
 async def run_agent(
@@ -203,103 +330,23 @@ async def run_agent(
         session_id = str(uuid.uuid4())
     _ensure_session(session_id, agent_id)
 
-    # -------------------------------------------------------------------
-    # REMIND MODE: push events to the active stream's queue
-    # -------------------------------------------------------------------
-    if source == "remind" and session_id in SESSION_QUEUES:
-        queue = SESSION_QUEUES[session_id]
-        auto = _get_or_create_auto(session_id, agent_id)
-        run_id = str(uuid.uuid4())
+    # Use first message as session name (truncated)
+    if SESSIONS[session_id].get("session_name", "").startswith("Session "):
+        SESSIONS[session_id]["session_name"] = message[:40] + " " + time.strftime("%H:%M")
 
-        # Push remind instruction event
-        await queue.put(json.dumps({
-            "event": "RunContent",
-            "content": message,
-            "content_type": "text/plain",
-            "source": "remind",
-            "session_id": session_id,
-            "run_id": run_id,
-            "created_at": int(time.time()),
-        }))
-
-        # Run agent query — push response events to queue
-        accumulated_text = ""
-        tools_used = []
-
-        async for msg in query(
-            prompt=message,
-            options=ClaudeAgentOptions(
-                allowed_tools=[
-                    "Read", "Edit", "Write", "Bash", "Glob", "Grep",
-                    "Agent", "WebSearch", "WebFetch", "Skill",
-                ],
-                permission_mode="bypassPermissions",
-                model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-sonnet-4-6"),
-                resume=auto._sessions.get("self", {}).get("session_id"),
-                setting_sources=["user"],
-            ),
-        ):
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if hasattr(block, "text"):
-                        accumulated_text += block.text
-                        await queue.put(json.dumps({
-                            "event": "RunContent",
-                            "content": accumulated_text,
-                            "content_type": "text/plain",
-                            "session_id": session_id,
-                            "run_id": run_id,
-                            "created_at": int(time.time()),
-                        }))
-                    elif hasattr(block, "name"):
-                        tool_record = {
-                            "role": "tool",
-                            "content": None,
-                            "tool_call_id": getattr(block, "id", str(uuid.uuid4())),
-                            "tool_name": block.name,
-                            "tool_args": getattr(block, "input", {}),
-                            "tool_call_error": False,
-                            "metrics": {"time": 0},
-                            "created_at": int(time.time()),
-                        }
-                        tools_used.append(tool_record)
-                        await queue.put(json.dumps({
-                            "event": "ToolCallStarted",
-                            "tools": [tool_record],
-                            "content_type": "text/plain",
-                            "session_id": session_id,
-                            "run_id": run_id,
-                            "created_at": int(time.time()),
-                        }))
-            elif isinstance(msg, ResultMessage):
-                if "self" not in auto._sessions:
-                    auto.agent("self")
-                auto._sessions["self"]["session_id"] = msg.session_id
-
-        # Store remind run
-        RUNS.setdefault(session_id, []).append({
-            "run_input": message,
-            "content": accumulated_text,
-            "tools": tools_used,
-            "created_at": int(time.time()),
-            "source": "remind",
-        })
-        SESSIONS[session_id]["updated_at"] = int(time.time())
-
-        return JSONResponse({"content": accumulated_text, "status": "ok"})
-
-    # -------------------------------------------------------------------
-    # NORMAL MODE: stream response directly to client
-    # -------------------------------------------------------------------
-    auto = _get_or_create_auto(session_id, agent_id)
     run_id = str(uuid.uuid4())
     now = int(time.time())
 
-    async def generate():
-        # Create queue for this session so remind() can push events
-        queue = asyncio.Queue()
-        SESSION_QUEUES[session_id] = queue
+    # Ensure background worker is running
+    _ensure_worker(session_id, agent_id)
 
+    # Push the initial message to the queue (same as any other message)
+    await SESSION_QUEUES[session_id].put({
+        "message": message,
+        "source": source,
+    })
+
+    async def generate():
         # RunStarted
         yield json.dumps({
             "event": "RunStarted",
@@ -308,137 +355,29 @@ async def run_agent(
             "agent_id": agent_id,
             "content_type": "text/plain",
             "created_at": now,
-            "source": source,
         })
 
-        accumulated_text = ""
-        tools_used = []
+        # Read events pushed by the worker
+        sse = SESSION_SSE.get(session_id)
+        if not sse:
+            return
 
-        try:
-            # Stream the agent's response to the user's message
-            async for msg in query(
-                prompt=message,
-                options=ClaudeAgentOptions(
-                    allowed_tools=[
-                        "Read", "Edit", "Write", "Bash", "Glob", "Grep",
-                        "Agent", "WebSearch", "WebFetch", "Skill",
-                    ],
-                    permission_mode="bypassPermissions",
-                    model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-sonnet-4-6"),
-                    resume=auto._sessions.get("self", {}).get("session_id"),
-                    setting_sources=["user"],
-                    env={
-                        "ORCHESTRATE_API_URL": "http://localhost:7777",
-                        "ORCHESTRATE_SESSION_ID": session_id,
-                    },
-                ),
-            ):
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if hasattr(block, "text"):
-                            accumulated_text += block.text
-                            yield json.dumps({
-                                "event": "RunContent",
-                                "content": accumulated_text,
-                                "content_type": "text/plain",
-                                "session_id": session_id,
-                                "run_id": run_id,
-                                "created_at": int(time.time()),
-                            })
-                        elif hasattr(block, "name"):
-                            tool_record = {
-                                "role": "tool",
-                                "content": None,
-                                "tool_call_id": getattr(block, "id", str(uuid.uuid4())),
-                                "tool_name": block.name,
-                                "tool_args": getattr(block, "input", {}),
-                                "tool_call_error": False,
-                                "metrics": {"time": 0},
-                                "created_at": int(time.time()),
-                            }
-                            tools_used.append(tool_record)
-                            yield json.dumps({
-                                "event": "ToolCallStarted",
-                                "tools": [tool_record],
-                                "content_type": "text/plain",
-                                "session_id": session_id,
-                                "run_id": run_id,
-                                "created_at": int(time.time()),
-                            })
-                elif isinstance(msg, ResultMessage):
-                    if "self" not in auto._sessions:
-                        auto.agent("self")
-                    auto._sessions["self"]["session_id"] = msg.session_id
-
-            # Store the initial run
-            RUNS.setdefault(session_id, []).append({
-                "run_input": message,
-                "content": accumulated_text,
-                "tools": tools_used,
-                "created_at": now,
-                "source": source,
-            })
-            SESSIONS[session_id]["updated_at"] = int(time.time())
-
-            # -----------------------------------------------------------
-            # WAIT FOR REMIND EVENTS from background program
-            # -----------------------------------------------------------
-            # After the agent's turn, wait for remind events pushed by
-            # the background orchestrate program. If nothing comes within
-            # WAIT_FOR_PROGRAM_TIMEOUT, close the stream.
+        while True:
             try:
-                while True:
-                    timeout = WAIT_FOR_PROGRAM_TIMEOUT if not tools_used else WAIT_FOR_PROGRAM_TIMEOUT
-                    event_str = await asyncio.wait_for(queue.get(), timeout=timeout)
-                    if event_str is None:  # done signal
-                        break
-                    yield event_str
-                    # After first event, use longer timeout between events
-                    while True:
-                        try:
-                            event_str = await asyncio.wait_for(queue.get(), timeout=BETWEEN_REMIND_TIMEOUT)
-                            if event_str is None:
-                                break
-                            yield event_str
-                        except asyncio.TimeoutError:
-                            break
-                    break
+                event_str = await asyncio.wait_for(sse.get(), timeout=QUEUE_IDLE_TIMEOUT)
             except asyncio.TimeoutError:
-                pass  # No program events, close stream normally
+                return
 
-            # RunCompleted
-            yield json.dumps({
-                "event": "RunCompleted",
-                "content": accumulated_text,
-                "content_type": "text/plain",
-                "session_id": session_id,
-                "run_id": run_id,
-                "created_at": int(time.time()),
-            })
+            yield event_str
 
-        except Exception as e:
-            yield json.dumps({
-                "event": "RunError",
-                "content": str(e),
-                "content_type": "text/plain",
-                "session_id": session_id,
-                "run_id": run_id,
-                "created_at": int(time.time()),
-            })
-
-        finally:
-            # Cleanup queue
-            SESSION_QUEUES.pop(session_id, None)
+            # Stop on RunCompleted
+            try:
+                if json.loads(event_str).get("event") == "RunCompleted":
+                    return
+            except json.JSONDecodeError:
+                pass
 
     return StreamingResponse(generate(), media_type="text/event-stream")
-
-
-@app.post("/sessions/{session_id}/program-done")
-async def program_done(session_id: str):
-    """Signal that the orchestrate program has finished."""
-    if session_id in SESSION_QUEUES:
-        await SESSION_QUEUES[session_id].put(None)  # done signal
-    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------

@@ -146,8 +146,8 @@ const Reasonings: FC<ReasoningProps> = ({ reasoning }) => (
 )
 
 const ToolComponent = memo(({ tools }: ToolCallProps) => (
-  <div className="cursor-default rounded-full bg-accent px-2 py-1.5 text-xs">
-    <p className="font-dmmono uppercase text-primary/80">{tools.tool_name}</p>
+  <div className="cursor-default rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+    <p className="font-dmmono uppercase">{tools.tool_name}</p>
   </div>
 ))
 ToolComponent.displayName = 'ToolComponent'
@@ -172,9 +172,19 @@ const Messages = ({ messages }: MessageListProps) => {
           )
         }
         if (message.role === 'remind') {
-          return <RemindMessage key={key} message={message} />
+          return (
+            <React.Fragment key={key}>
+              {index > 0 && <div className="my-4 border-t border-accent/40" />}
+              <RemindMessage message={message} />
+            </React.Fragment>
+          )
         }
-        return <UserMessage key={key} message={message} />
+        return (
+          <React.Fragment key={key}>
+            {index > 0 && <div className="my-4 border-t border-accent/40" />}
+            <UserMessage message={message} />
+          </React.Fragment>
+        )
       })}
     </>
   )

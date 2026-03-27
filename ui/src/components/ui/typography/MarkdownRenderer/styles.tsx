@@ -1,6 +1,6 @@
 'use client'
 
-import { FC, useState } from 'react'
+import { FC, ReactNode, useState } from 'react'
 
 import Image from 'next/image'
 import Link from 'next/link'
@@ -26,9 +26,10 @@ import type {
   TableHeaderProps,
   TableBodyProps,
   TableRowProps,
-  TableCellProps,
-  PreparedTextProps
+  TableCellProps
 } from './types'
+
+import CodeBlock from './CodeBlock'
 
 import { HEADING_SIZES } from '../Heading/constants'
 import { PARAGRAPH_SIZES } from '../Paragraph/constants'
@@ -121,13 +122,31 @@ const HorizontalRule = ({ className, ...props }: HorizontalRuleProps) => (
   />
 )
 
-const InlineCode: FC<PreparedTextProps> = ({ children }) => {
+interface CodeProps {
+  className?: string
+  children?: ReactNode
+  inline?: boolean
+}
+
+const Code: FC<CodeProps> = ({ className, children, inline }) => {
+  const language = className?.replace(/^language-/, '') ?? ''
+
+  // Block code: has a language class or is explicitly not inline
+  if (language || inline === false) {
+    const code = String(children).replace(/\n$/, '')
+    return <CodeBlock language={language || 'text'} code={code} />
+  }
+
+  // Inline code
   return (
-    <code className="relative whitespace-pre-wrap rounded-sm bg-background-secondary/50 p-1">
+    <code className="relative whitespace-pre-wrap rounded-sm bg-background-secondary/50 px-1.5 py-0.5 text-[0.9em] font-mono">
       {children}
     </code>
   )
 }
+
+// Pre wrapper — make it transparent so Code handles the full block rendering
+const Pre: FC<{ children?: ReactNode }> = ({ children }) => <>{children}</>
 
 const Blockquote = ({ className, ...props }: BlockquoteProps) => (
   <blockquote
@@ -268,7 +287,8 @@ export const components = {
   del: DeletedText,
   hr: HorizontalRule,
   blockquote: Blockquote,
-  code: InlineCode,
+  code: Code,
+  pre: Pre,
   a: AnchorLink,
   img: Img,
   p: Paragraph,
