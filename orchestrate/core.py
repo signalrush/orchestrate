@@ -101,6 +101,12 @@ class Auto:
         if to not in self._sessions:
             self.agent(to)
 
+        # Append JSON format instructions when schema is provided
+        prompt = instruction
+        if schema:
+            schema_desc = json.dumps(schema, indent=2)
+            prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
+
         agent = self._sessions[to]
         opts = ClaudeAgentOptions(
             allowed_tools=ALL_TOOLS,
@@ -111,7 +117,7 @@ class Auto:
         )
 
         result_text = ""
-        async for msg in query(prompt=instruction, options=opts):
+        async for msg in query(prompt=prompt, options=opts):
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if hasattr(block, "text"):

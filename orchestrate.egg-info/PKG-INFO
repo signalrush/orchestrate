@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: orchestrate
+Version: 0.1.0
+Summary: Agent SDK-based orchestration library
+Requires-Python: >=3.10
+Requires-Dist: claude-agent-sdk
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
