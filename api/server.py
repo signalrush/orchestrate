@@ -174,7 +174,7 @@ async def _session_worker(session_id: str, agent_id: str):
         except asyncio.TimeoutError:
             break
         if item.get("type") == "done":
-            break
+            continue  # program finished, but keep worker alive for follow-up messages
 
         item_source = item["source"]
         item_message = item["message"]
