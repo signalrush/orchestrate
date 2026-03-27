@@ -27,9 +27,10 @@ Frontmatter with name + description (trigger keywords). Body teaches the model:
 
 - How to write a program: `async def main(auto)` using `from orchestrate import Auto`
 - API: `auto.remind(instruction, schema=None)`, `auto.task(instruction, to, schema=None)`, `auto.agent(name, cwd=None)`
-- How to launch: `orchestrate-run <file.py>`
-- How to monitor: `orchestrate-run status`
-- How to stop: `orchestrate-run stop`
+- How to launch: `orchestrate-run <file.py>` (returns a run ID)
+- How to list runs: `orchestrate-run list`
+- How to monitor: `orchestrate-run status <id>`, `orchestrate-run log <id>`
+- How to stop: `orchestrate-run stop <id>`, `orchestrate-run stop --all`
 - Patterns: optimization loops, multi-agent, error recovery, periodic reflection
 - State tracking via `from orchestrate import state`
 
@@ -37,34 +38,55 @@ Trigger keywords: "orchestrate", "run a loop", "multi-agent", "keep improving", 
 
 ### 2. CLI wrapper (`src/orchestrate/cli.py`)
 
-Thin CLI managing background processes. Entry point: `orchestrate-run`.
+Thin CLI managing multiple concurrent background processes. Entry point: `orchestrate-run`.
+
+Each run gets a short ID (first 4 chars of a uuid) for easy reference.
 
 **Commands:**
 
 #### `orchestrate-run <file.py>`
 1. Resolve file path
-2. Create run directory: `~/.orchestrate/<timestamp>/`
-3. Update `~/.orchestrate/latest` symlink
-4. Write `run.json`: `{pid, file, start_time, status: "running"}`
+2. Generate run ID (4-char short uuid)
+3. Create run directory: `~/.orchestrate/runs/<id>/`
+4. Write `run.json`: `{id, pid, file, start_time, status: "running"}`
 5. Fork background process:
    - Import user module
    - Find `async def main(auto)` (or `async def main(step)` for compat)
    - Create `Auto()` instance
    - Call `asyncio.run(main(auto))`
    - On completion/error, update `run.json` status to "done"/"error"
-6. Stream stdout/stderr to `~/.orchestrate/latest/output.log`
-7. Print PID + log path, return immediately
+6. Stream stdout/stderr to `~/.orchestrate/runs/<id>/output.log`
+7. Print run ID + log path, return immediately
 
-#### `orchestrate-run status`
-1. Read `~/.orchestrate/latest/run.json`
+#### `orchestrate-run list`
+1. Scan all directories in `~/.orchestrate/runs/`
+2. Read each `run.json`, check if PID is alive
+3. Print table: ID, FILE, STATUS, STARTED
+
+Example output:
+```
+ID        FILE              STATUS    STARTED
+a3f1      optimize.py       running   2 min ago
+b7c2      research.py       running   15 min ago
+c9d0      sweep.py          done      1 hour ago
+```
+
+#### `orchestrate-run status <id>`
+1. Read `~/.orchestrate/runs/<id>/run.json`
 2. Check if PID is alive (`os.kill(pid, 0)`)
 3. Print: status, file, elapsed time
 4. Tail last 20 lines of `output.log`
+5. If no `<id>` given, behave like `list`
 
-#### `orchestrate-run stop`
-1. Read PID from `~/.orchestrate/latest/run.json`
+#### `orchestrate-run stop <id>`
+1. Read PID from `~/.orchestrate/runs/<id>/run.json`
 2. Send SIGTERM, wait 3s, SIGKILL if needed
 3. Update `run.json` status to "stopped"
+4. `orchestrate-run stop --all` kills all running processes
+
+#### `orchestrate-run log <id>`
+1. Tail the `output.log` file for the given run ID
+2. Streams live output (like `tail -f`)
 
 ### 3. Source restructure
 
@@ -112,13 +134,16 @@ where = ["src"]
 
 ```
 ~/.orchestrate/
-├── latest -> ./1711500000/
-├── 1711500000/
-│   ├── run.json       # {pid, file, start_time, status, error?}
-│   └── output.log     # stdout + stderr from the program
-└── 1711499000/
-    ├── run.json
-    └── output.log
+└── runs/
+    ├── a3f1/
+    │   ├── run.json       # {id, pid, file, start_time, status, error?}
+    │   └── output.log     # stdout + stderr from the program
+    ├── b7c2/
+    │   ├── run.json
+    │   └── output.log
+    └── c9d0/
+        ├── run.json
+        └── output.log
 ```
 
 ## Program API
@@ -166,4 +191,5 @@ Registers the skill with Claude Code and makes `orchestrate-run` available in PA
 
 - Update existing 18 unit tests to use `src/` import paths
 - Update API server imports
-- Add CLI tests: verify run/status/stop commands work with a mock program
+- Add CLI tests: verify run/list/status/stop/log commands work with a mock program
+- Test concurrent runs: launch two programs, verify `list` shows both, `stop` targets correct one
