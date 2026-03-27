@@ -79,10 +79,13 @@ class Auto:
     remind() sends to self. task() sends to a named agent.
     """
 
-    def __init__(self, cwd: str | None = None, model: str = "claude-sonnet-4-6"):
+    def __init__(self, cwd: str | None = None, model: str = "claude-sonnet-4-6",
+                 api_url: str | None = None, session_id: str | None = None):
         self._sessions: dict[str, dict] = {}
         self._cwd = cwd or os.getcwd()
         self._model = model
+        self._api_url = api_url
+        self._session_id = session_id
 
     def agent(self, name: str, cwd: str | None = None) -> None:
         """Declare a named agent. Optional — task() auto-creates on first use."""
@@ -98,6 +101,11 @@ class Auto:
 
     async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
         """Send instruction to a named agent. Accumulates session context."""
+        # API mode: POST to the API endpoint
+        if self._api_url and to == "self":
+            return await self._remind_via_api(instruction, schema)
+
+        # SDK mode: direct Agent SDK call (existing code continues below)
         if to not in self._sessions:
             self.agent(to)
 
@@ -127,6 +135,53 @@ class Auto:
 
         # Log to stdout so orchestrate-run captures output
         print(f"[{to}] {result_text[:200]}", flush=True)
+
+        if schema:
+            return _parse_json(result_text, schema)
+        return result_text
+
+    async def _remind_via_api(self, instruction: str, schema: dict | None = None) -> str | dict:
+        """Send remind via HTTP POST to the API server."""
+        import urllib.request
+        import urllib.parse
+
+        prompt = instruction
+        if schema:
+            schema_desc = json.dumps(schema, indent=2)
+            prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
+
+        data = urllib.parse.urlencode({
+            "message": prompt,
+            "stream": "false",
+            "session_id": self._session_id or "",
+            "source": "remind",
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{self._api_url}/agents/orchestrator/runs",
+            data=data,
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req) as resp:
+            body = resp.read().decode()
+
+        # Parse concatenated JSON events to find RunCompleted content
+        result_text = ""
+        for line in body.split("}{"):
+            chunk = line
+            if not chunk.startswith("{"):
+                chunk = "{" + chunk
+            if not chunk.endswith("}"):
+                chunk = chunk + "}"
+            try:
+                event = json.loads(chunk)
+                if event.get("event") == "RunCompleted":
+                    result_text = event.get("content", "")
+            except json.JSONDecodeError:
+                continue
+
+        print(f"[remind] {result_text[:200]}", flush=True)
 
         if schema:
             return _parse_json(result_text, schema)

@@ -78,7 +78,9 @@ class _LazyAuto:
     def _get(self) -> object:
         if self._real is None:
             from orchestrate.core import Auto
-            self._real = Auto()
+            api_url = os.environ.get("ORCHESTRATE_API_URL")
+            session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
+            self._real = Auto(api_url=api_url, session_id=session_id)
         return self._real
 
     def __getattr__(self, name: str):
