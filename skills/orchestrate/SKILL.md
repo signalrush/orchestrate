@@ -7,6 +7,8 @@ description: Run yourself in a loop with programmatic control via the Agent SDK.
 
 Write a Python program that drives agent execution. The program is your body — `auto.run()` is how you think. You write the loop, it keeps you alive.
 
+A single program can efficiently coordinate 100+ agents — fan out work with `asyncio.gather`, manage worker pools with queues, and stay in control through structured `auto.run()` decisions. The only limit is how well you design the program.
+
 ## Launch
 
 1. Write `async def main(auto):`
