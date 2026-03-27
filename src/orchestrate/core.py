@@ -76,7 +76,7 @@ class Auto:
     """Orchestrate multiple Claude agents via the Agent SDK.
 
     Each agent (including 'self') maintains its own session.
-    remind() sends to self. task() sends to a named agent.
+    run() sends to self or a named agent.
     """
 
     def __init__(self, cwd: str | None = None, model: str = "claude-sonnet-4-6",
@@ -88,24 +88,20 @@ class Auto:
         self._session_id = session_id
 
     def agent(self, name: str, cwd: str | None = None) -> None:
-        """Declare a named agent. Optional — task() auto-creates on first use."""
+        """Declare a named agent. Optional — run() auto-creates on first use."""
         if name not in self._sessions:
             self._sessions[name] = {
                 "session_id": None,
                 "cwd": cwd or self._cwd,
             }
 
-    async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
-        """Send instruction to self. Alias for task(instruction, to='self')."""
-        return await self.task(instruction, to="self", schema=schema)
-
-    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
-        """Send instruction to a named agent. Accumulates session context."""
+    async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
+        """Send instruction to a named agent. Defaults to self. Accumulates session context."""
         # API mode: POST to the API endpoint
         if self._api_url and to == "self":
             return await self._remind_via_api(instruction, schema)
 
-        # SDK mode: direct Agent SDK call (existing code continues below)
+        # SDK mode: direct Agent SDK call
         if to not in self._sessions:
             self.agent(to)
 
@@ -139,6 +135,14 @@ class Auto:
         if schema:
             return _parse_json(result_text, schema)
         return result_text
+
+    async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
+        """Deprecated. Use run() instead."""
+        return await self.run(instruction, schema=schema)
+
+    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
+        """Deprecated. Use run(instruction, to=...) instead."""
+        return await self.run(instruction, to=to, schema=schema)
 
     async def _remind_via_api(self, instruction: str, schema: dict | None = None) -> str | dict:
         """Send remind via HTTP POST to the session message endpoint."""
