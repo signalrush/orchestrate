@@ -11,7 +11,6 @@ import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
 
 const ChatInput = () => {
   const { chatInputRef } = useStore()
-  const setMessages = useStore((state) => state.setMessages)
 
   const { handleStreamResponse } = useAIChatStreamHandler()
   const [selectedAgent] = useQueryState('agent')
@@ -19,7 +18,6 @@ const ChatInput = () => {
   const [sessionId] = useQueryState('session')
   const selectedEndpoint = useStore((state) => state.selectedEndpoint)
   const [inputMessage, setInputMessage] = useState('')
-  const [pending, setPending] = useState(false)
   const isStreaming = useStore((state) => state.isStreaming)
   // Synchronous guard to prevent duplicate streams (React state is async)
   const streamActiveRef = useRef(false)
@@ -57,26 +55,15 @@ const ChatInput = () => {
           pendingMessagesRef.current.push(currentMessage)
           return
         }
-        // During active stream: show user bubble instantly, push to queue
-        setMessages((prev) => [...prev, {
-          role: 'user' as const,
-          content: currentMessage,
-          created_at: Math.floor(Date.now() / 1000),
-          _local: true,  // flag for dedup when source marker arrives
-        }])
+        // During active stream: push to queue. Server source marker creates bubble.
         const endpointUrl = constructEndpointUrl(selectedEndpoint)
         const formData = new FormData()
         formData.append('message', currentMessage)
         formData.append('source', 'user')
-        setPending(true)
-        try {
-          await fetch(`${endpointUrl}/sessions/${sessionId}/message`, {
-            method: 'POST',
-            body: formData,
-          })
-        } finally {
-          setPending(false)
-        }
+        await fetch(`${endpointUrl}/sessions/${sessionId}/message`, {
+          method: 'POST',
+          body: formData,
+        })
       } else {
         // No active stream: create new stream
         streamActiveRef.current = true
@@ -97,7 +84,6 @@ const ChatInput = () => {
 
   return (
     <div className="relative mx-auto mb-1 flex w-full max-w-2xl items-end justify-center gap-x-2 font-geist">
-      {pending && <div className="text-xs text-muted-foreground px-2 py-1">Message queued...</div>}
       <TextArea
         placeholder={'Ask anything'}
         value={inputMessage}

@@ -24,6 +24,7 @@ const useAIChatStreamHandler = () => {
     (state) => state.setStreamingErrorMessage
   )
   const setIsStreaming = useStore((state) => state.setIsStreaming)
+  const setPendingQueue = useStore((state) => state.setPendingQueue)
   const setSessionsData = useStore((state) => state.setSessionsData)
   const { streamResponse } = useAIResponseStream()
 
@@ -175,6 +176,26 @@ const useAIChatStreamHandler = () => {
                 })
               }
             } else if (
+              (chunk.event as string) === 'MessageQueued'
+            ) {
+              // Server says a message entered the queue — add to pending display
+              setPendingQueue((prev) => [...prev, {
+                content: typeof chunk.content === 'string' ? chunk.content : '',
+                source: (chunk as any).source || 'user',
+                created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+              }])
+            } else if (
+              (chunk.event as string) === 'MessageDequeued'
+            ) {
+              // Server says a message left the queue — remove from pending display
+              const content = typeof chunk.content === 'string' ? chunk.content : ''
+              const source = (chunk as any).source || 'user'
+              setPendingQueue((prev) => {
+                const idx = prev.findIndex((p) => p.content === content && p.source === source)
+                if (idx >= 0) return [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+                return prev
+              })
+            } else if (
               chunk.event === RunEvent.ToolCallStarted ||
               chunk.event === RunEvent.TeamToolCallStarted ||
               chunk.event === RunEvent.ToolCallCompleted ||
@@ -200,18 +221,11 @@ const useAIChatStreamHandler = () => {
                 const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
                 setMessages((prevMessages) => {
                   const newMessages = [...prevMessages]
-                  // Dedup: if a local user bubble already exists, skip creating another
-                  const lastMsg = newMessages[newMessages.length - 1]
-                  const alreadyLocal = role === 'user' && lastMsg && lastMsg.role === 'user' && (lastMsg as any)._local
-                  if (alreadyLocal) {
-                    delete (lastMsg as any)._local
-                  } else {
-                    newMessages.push({
-                      role: role as any,
-                      content: typeof chunk.content === 'string' ? chunk.content : '',
-                      created_at: chunk.created_at ?? Math.floor(Date.now() / 1000)
-                    })
-                  }
+                  newMessages.push({
+                    role: role as any,
+                    content: typeof chunk.content === 'string' ? chunk.content : '',
+                    created_at: chunk.created_at ?? Math.floor(Date.now() / 1000)
+                  })
                   newMessages.push({
                     role: 'agent',
                     content: '',
@@ -447,7 +461,8 @@ const useAIChatStreamHandler = () => {
       setSessionsData,
       sessionId,
       setSessionId,
-      processChunkToolCalls
+      processChunkToolCalls,
+      setPendingQueue
     ]
   )
 

@@ -33,6 +33,10 @@ interface Store {
   setMessages: (
     messages: ChatMessage[] | ((prevMessages: ChatMessage[]) => ChatMessage[])
   ) => void
+  pendingQueue: { content: string; source: string; created_at: number }[]
+  setPendingQueue: (
+    queue: { content: string; source: string; created_at: number }[] | ((prev: { content: string; source: string; created_at: number }[]) => { content: string; source: string; created_at: number }[])
+  ) => void
   chatInputRef: React.RefObject<HTMLTextAreaElement | null>
   selectedEndpoint: string
   setSelectedEndpoint: (selectedEndpoint: string) => void
@@ -79,6 +83,12 @@ export const useStore = create<Store>()(
         set((state) => ({
           messages:
             typeof messages === 'function' ? messages(state.messages) : messages
+        })),
+      pendingQueue: [],
+      setPendingQueue: (queue) =>
+        set((state) => ({
+          pendingQueue:
+            typeof queue === 'function' ? queue(state.pendingQueue) : queue
         })),
       chatInputRef: { current: null },
       selectedEndpoint: 'http://localhost:7777',

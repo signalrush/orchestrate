@@ -181,7 +181,16 @@ async def _session_worker(session_id: str, agent_id: str):
         item_future = item.get("future")
         item_run_id = str(uuid.uuid4())
 
-        # Emit source marker — UI creates the bubble
+        # Tell UI this message left the queue
+        _emit(session_id, {
+            "event": "MessageDequeued",
+            "content": item_message,
+            "source": item_source,
+            "session_id": session_id,
+            "created_at": int(time.time()),
+        })
+
+        # Source marker — UI adds to main messages
         _emit(session_id, {
             "event": "RunContent",
             "content": item_message,
@@ -300,6 +309,15 @@ async def post_message(
         "message": message,
         "source": source,
         "future": future,
+    })
+
+    # Emit queued event so UI shows the message immediately
+    _emit(session_id, {
+        "event": "MessageQueued",
+        "content": message,
+        "source": source,
+        "session_id": session_id,
+        "created_at": int(time.time()),
     })
 
     result = await future
