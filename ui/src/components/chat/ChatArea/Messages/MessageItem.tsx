@@ -91,6 +91,22 @@ const UserMessage = memo(({ message }: MessageProps) => {
   )
 })
 
+const RemindMessage = memo(({ message }: MessageProps) => {
+  return (
+    <div className="flex items-start gap-4 pt-4 text-start max-md:break-words">
+      <div className="flex-shrink-0">
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/20 text-xs font-bold text-accent">
+          R
+        </div>
+      </div>
+      <div className="text-md rounded-lg font-geist text-secondary italic">
+        {message.content}
+      </div>
+    </div>
+  )
+})
+RemindMessage.displayName = 'RemindMessage'
+
 AgentMessage.displayName = 'AgentMessage'
 UserMessage.displayName = 'UserMessage'
-export { AgentMessage, UserMessage }
+export { AgentMessage, UserMessage, RemindMessage }

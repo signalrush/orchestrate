@@ -195,7 +195,7 @@ export interface ReasoningMessage {
   created_at?: number
 }
 export interface ChatMessage {
-  role: 'user' | 'agent' | 'system' | 'tool'
+  role: 'user' | 'agent' | 'system' | 'tool' | 'remind'
   content: string
   streamingError?: boolean
   created_at: number

@@ -87,7 +87,7 @@ const useSessionLoader = () => {
 
               if (run) {
                 filteredMessages.push({
-                  role: 'user',
+                  role: run.source === 'remind' ? 'remind' : 'user',
                   content: run.run_input ?? '',
                   created_at: run.created_at
                 })

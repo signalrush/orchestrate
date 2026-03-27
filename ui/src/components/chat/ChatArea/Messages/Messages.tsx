@@ -1,6 +1,6 @@
 import type { ChatMessage } from '@/types/os'
 
-import { AgentMessage, UserMessage } from './MessageItem'
+import { AgentMessage, UserMessage, RemindMessage } from './MessageItem'
 import Tooltip from '@/components/ui/tooltip'
 import { memo } from 'react'
 import {
@@ -170,6 +170,9 @@ const Messages = ({ messages }: MessageListProps) => {
               isLastMessage={isLastMessage}
             />
           )
+        }
+        if (message.role === 'remind') {
+          return <RemindMessage key={key} message={message} />
         }
         return <UserMessage key={key} message={message} />
       })}
