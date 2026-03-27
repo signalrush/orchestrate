@@ -125,6 +125,9 @@ class Auto:
             elif isinstance(msg, ResultMessage):
                 agent["session_id"] = msg.session_id
 
+        # Log to stdout so orchestrate-run captures output
+        print(f"[{to}] {result_text[:200]}", flush=True)
+
         if schema:
             return _parse_json(result_text, schema)
         return result_text

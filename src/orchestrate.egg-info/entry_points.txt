@@ -1,0 +1,2 @@
+[console_scripts]
+orchestrate-run = orchestrate.cli:main

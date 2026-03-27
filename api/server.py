@@ -46,6 +46,7 @@ AGENTS: dict[str, dict] = {
     "orchestrator": {
         "id": "orchestrator",
         "name": "Orchestrate Agent",
+        "db_id": "default",
         "model": {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"},
     }
 }
@@ -157,6 +158,7 @@ async def run_agent(
             "session_id": session_id,
             "run_id": run_id,
             "agent_id": agent_id,
+            "content_type": "text/plain",
             "created_at": now,
         })
 
@@ -174,6 +176,7 @@ async def run_agent(
                     permission_mode="bypassPermissions",
                     model=AGENTS.get(agent_id, {}).get("model", {}).get("model", "claude-sonnet-4-6"),
                     resume=auto._sessions.get("self", {}).get("session_id"),
+                    setting_sources=["user"],
                 ),
             ):
                 if isinstance(msg, AssistantMessage):
@@ -183,7 +186,7 @@ async def run_agent(
                             yield json.dumps({
                                 "event": "RunContent",
                                 "content": accumulated_text,
-                                "content_type": "str",
+                                "content_type": "text/plain",
                                 "session_id": session_id,
                                 "run_id": run_id,
                                 "created_at": int(time.time()),
@@ -204,6 +207,7 @@ async def run_agent(
                             yield json.dumps({
                                 "event": "ToolCallStarted",
                                 "tools": [tool_record],
+                                "content_type": "text/plain",
                                 "session_id": session_id,
                                 "run_id": run_id,
                                 "created_at": int(time.time()),
@@ -219,7 +223,7 @@ async def run_agent(
             yield json.dumps({
                 "event": "RunCompleted",
                 "content": accumulated_text,
-                "content_type": "str",
+                "content_type": "text/plain",
                 "session_id": session_id,
                 "run_id": run_id,
                 "created_at": int(time.time()),
@@ -229,6 +233,7 @@ async def run_agent(
             yield json.dumps({
                 "event": "RunError",
                 "content": str(e),
+                "content_type": "text/plain",
                 "session_id": session_id,
                 "run_id": run_id,
                 "created_at": int(time.time()),
@@ -243,7 +248,7 @@ async def run_agent(
         })
         SESSIONS[session_id]["updated_at"] = int(time.time())
 
-    return StreamingResponse(generate(), media_type="application/json")
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +263,7 @@ async def register_agent(request: Request):
     AGENTS[agent_id] = {
         "id": agent_id,
         "name": data.get("name", agent_id),
+        "db_id": data.get("db_id", "default"),
         "model": data.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
     }
     return AGENTS[agent_id]
