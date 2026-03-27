@@ -137,3 +137,21 @@ async def test_delete_session(client):
     assert resp.status_code == 200
     assert sid not in SESSIONS
     assert sid not in RUNS
+
+
+@pytest.mark.asyncio
+async def test_run_stores_source_field(client):
+    """Run records should include source field."""
+    sid = "test-source"
+    SESSIONS[sid] = {
+        "session_id": sid, "session_name": "Test",
+        "agent_id": "orchestrator", "created_at": 1000, "updated_at": 1000,
+    }
+    RUNS[sid] = [
+        {"run_input": "hello", "content": "hi", "tools": [], "created_at": 1000, "source": "user"},
+        {"run_input": "remind msg", "content": "ok", "tools": [], "created_at": 1001, "source": "remind"},
+    ]
+    resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
+    runs = resp.json()
+    assert runs[0]["source"] == "user"
+    assert runs[1]["source"] == "remind"

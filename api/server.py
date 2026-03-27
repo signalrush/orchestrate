@@ -141,6 +141,7 @@ async def run_agent(
     message: str = Form(...),
     stream: str = Form("true"),
     session_id: str = Form(""),
+    source: str = Form("user"),
 ):
     # Create or reuse session
     if not session_id:
@@ -160,6 +161,7 @@ async def run_agent(
             "agent_id": agent_id,
             "content_type": "text/plain",
             "created_at": now,
+            "source": source,
         })
 
         accumulated_text = ""
@@ -245,6 +247,7 @@ async def run_agent(
             "content": accumulated_text,
             "tools": tools_used,
             "created_at": now,
+            "source": source,
         })
         SESSIONS[session_id]["updated_at"] = int(time.time())
 
