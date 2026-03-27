@@ -15,7 +15,6 @@ const useSessionPolling = () => {
   const authToken = useStore((state) => state.authToken)
   const messages = useStore((state) => state.messages)
   const setMessages = useStore((state) => state.setMessages)
-  const isStreaming = useStore((state) => state.isStreaming)
   const lastRunCount = useRef(0)
 
   // Reset run count when session changes
@@ -32,7 +31,7 @@ const useSessionPolling = () => {
   }, [messages.length])
 
   const poll = useCallback(async () => {
-    if (!selectedEndpoint || !sessionId || isStreaming) return
+    if (!selectedEndpoint || !sessionId) return
 
     try {
       const endpointUrl = constructEndpointUrl(selectedEndpoint)
@@ -116,7 +115,7 @@ const useSessionPolling = () => {
     } catch {
       // Silently ignore polling errors
     }
-  }, [selectedEndpoint, sessionId, dbId, authToken, isStreaming, setMessages])
+  }, [selectedEndpoint, sessionId, dbId, authToken, setMessages])
 
   useEffect(() => {
     const interval = setInterval(poll, POLL_INTERVAL)
