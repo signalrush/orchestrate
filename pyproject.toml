@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestrate"
+version = "0.1.0"
+description = "Agent SDK-based orchestration library"
+requires-python = ">=3.10"
+dependencies = [
+    "claude-agent-sdk",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
