@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 
-def _parse_json(text: str, schema: dict) -> dict:
+def _parse_json(text: str) -> dict:
     """Extract JSON object from response text. Lenient parsing.
 
     Tries in order:
@@ -72,9 +72,9 @@ class Orchestrate:
         self._api_url = api_url
         self._client = httpx.AsyncClient(base_url=api_url, timeout=None)
 
-    def agent(self, name: str, cwd: str | None = None, model: str | None = None,
-              tools: list | None = None, prompt: str | None = None) -> None:
-        """Declare a named agent via POST /agents. Synchronous — no await needed."""
+    async def agent(self, name: str, cwd: str | None = None, model: str | None = None,
+                    tools: list | None = None, prompt: str | None = None) -> None:
+        """Declare a named agent via POST /agents."""
         config: dict[str, Any] = {"name": name}
         if cwd is not None:
             config["cwd"] = cwd
@@ -84,10 +84,12 @@ class Orchestrate:
             config["tools"] = tools
         if prompt is not None:
             config["prompt"] = prompt
-        # Sync call — agent registration should be fast
-        with httpx.Client(base_url=self._api_url, timeout=None) as client:
-            resp = client.post("/agents", json=config)
-            resp.raise_for_status()
+        resp = await self._client.post("/agents", json=config)
+        resp.raise_for_status()
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
 
     async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
         """Send instruction to a named agent via POST /agents/{to}/message."""
@@ -115,7 +117,7 @@ class Orchestrate:
                 return result_text
 
             try:
-                return _parse_json(result_text, schema)
+                return _parse_json(result_text)
             except ValueError as e:
                 last_error = e
                 print(f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)

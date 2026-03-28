@@ -129,8 +129,8 @@ if result["passing"]:  # clean
 ### Configure agents for different roles
 
 ```python
-orch.agent("coder", cwd="/project")
-orch.agent("reviewer", cwd="/project")
+await orch.agent("coder", cwd="/project")
+await orch.agent("reviewer", cwd="/project")
 
 code = await orch.run("implement the feature", to="coder")
 review = await orch.run(f"review this:\n{code}", to="reviewer")
