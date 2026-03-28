@@ -80,13 +80,17 @@ const Sessions = () => {
     }
   }, [])
 
+  // Load session on page mount (for URL with session ID after refresh).
+  // NOT on every sessionId change — that would overwrite streaming messages.
+  const initialLoadDone = useRef(false)
   useEffect(() => {
-    if (hydrated && sessionId && selectedEndpoint && (agentId || teamId)) {
+    if (hydrated && sessionId && selectedEndpoint && (agentId || teamId) && !initialLoadDone.current) {
+      initialLoadDone.current = true
       const entityType = agentId ? 'agent' : 'team'
       getSession({ entityType, agentId, teamId, dbId }, sessionId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, sessionId, selectedEndpoint, agentId, teamId, dbId])
+  }, [hydrated])
 
   useEffect(() => {
     if (!selectedEndpoint || isEndpointLoading) return
