@@ -1,9 +1,10 @@
-"""orchestrate core — Orchestrate class and helpers."""
+"""orchestrate core — Orchestrate class (pure HTTP client)."""
 
 import json
 import re
-import urllib.request
 from typing import Any
+
+import httpx
 
 
 def _parse_json(text: str, schema: dict) -> dict:
@@ -60,14 +61,20 @@ def _parse_json(text: str, schema: dict) -> dict:
 
 
 class Orchestrate:
-    """Orchestrate multiple Claude agents via the REST API."""
+    """Pure HTTP client for the orchestrate API.
+
+    orch.run(instruction) — talk to self
+    orch.run(instruction, to="agent") — talk to another agent
+    orch.agent(name, ...) — register an agent
+    """
 
     def __init__(self, api_url: str | None = None):
         self._api_url = api_url
+        self._client = httpx.AsyncClient(base_url=api_url, timeout=None)
 
     def agent(self, name: str, cwd: str | None = None, model: str | None = None,
               tools: list | None = None, prompt: str | None = None) -> None:
-        """Declare a named agent via POST /agents."""
+        """Declare a named agent via POST /agents. Synchronous — no await needed."""
         config: dict[str, Any] = {"name": name}
         if cwd is not None:
             config["cwd"] = cwd
@@ -77,7 +84,10 @@ class Orchestrate:
             config["tools"] = tools
         if prompt is not None:
             config["prompt"] = prompt
-        self._post_json("/agents", config)
+        # Sync call — agent registration should be fast
+        with httpx.Client(base_url=self._api_url, timeout=None) as client:
+            resp = client.post("/agents", json=config)
+            resp.raise_for_status()
 
     async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
         """Send instruction to a named agent via POST /agents/{to}/message."""
@@ -91,7 +101,12 @@ class Orchestrate:
                 prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
                            f"Keys and types:\n{schema_desc}")
 
-            result = self._post_form(f"/agents/{to}/message", {"message": prompt, "source": "remind"})
+            resp = await self._client.post(
+                f"/agents/{to}/message",
+                data={"message": prompt, "source": "remind"},
+            )
+            resp.raise_for_status()
+            result = resp.json()
             result_text = result.get("content", "") if isinstance(result, dict) else str(result)
 
             print(f"[{to}] {result_text[:200]}", flush=True)
@@ -107,33 +122,13 @@ class Orchestrate:
 
         raise last_error
 
-    def _post_json(self, path: str, data: dict) -> dict:
-        """POST JSON to path under api_url and return parsed response."""
-        url = f"{self._api_url}{path}"
-        body = json.dumps(data).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            return json.loads(resp.read().decode())
-
-    def _post_form(self, path: str, data: dict) -> dict:
-        url = f"{self._api_url}{path}"
-        body = urllib.parse.urlencode(data).encode()
-        req = urllib.request.Request(url, data=body, method="POST")
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            return json.loads(resp.read().decode())
-
     async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
         """Deprecated. Use run() instead."""
-        return self.run(instruction, schema=schema)
+        return await self.run(instruction, schema=schema)
 
     async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
         """Deprecated. Use run(instruction, to=...) instead."""
-        return self.run(instruction, to=to, schema=schema)
+        return await self.run(instruction, to=to, schema=schema)
 
 
 Auto = Orchestrate  # deprecated alias
