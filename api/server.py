@@ -55,14 +55,7 @@ AGENTS: dict[str, dict] = {
         "tools": ALL_TOOLS,
         "prompt": "",
     },
-    "self": {
-        "id": "self",
-        "name": "self",
-        "model": "claude-sonnet-4-6",
-        "cwd": os.getcwd(),
-        "tools": ALL_TOOLS,
-        "prompt": "",
-    },
+    # "self" is aliased to "orchestrator" in post_agent_message
 }
 
 SESSIONS: dict[str, dict] = {}
@@ -266,6 +259,9 @@ async def post_agent_message(
     session_id: str = Form(""),
 ):
     """Push a message to the agent's queue. Blocks until processed, returns response."""
+    # "self" is an alias for "orchestrator"
+    if agent_name == "self":
+        agent_name = "orchestrator"
     if agent_name not in AGENTS:
         return JSONResponse({"error": "agent not found"}, status_code=404)
 
