@@ -176,6 +176,12 @@ const useAIChatStreamHandler = () => {
                 })
               }
             } else if (
+              (chunk.event as string) === 'AgentRegistered'
+            ) {
+              // New agent created — refresh session list
+              setSessionsData((prev) => prev)
+              window.dispatchEvent(new Event('sessions-refresh'))
+            } else if (
               (chunk.event as string) === 'MessageQueued'
             ) {
               // Server says a message entered the queue — add to pending display

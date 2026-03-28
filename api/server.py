@@ -279,6 +279,15 @@ async def register_agent(request: Request):
         "tools": data.get("tools", ALL_TOOLS),
         "prompt": data.get("prompt", ""),
     }
+    # Create worker + session so it appears in sidebar immediately
+    _ensure_agent_worker(agent_name)
+    # Notify the orchestrator's SSE stream so UI refreshes sidebar
+    _emit_agent("orchestrator", {
+        "event": "AgentRegistered",
+        "agent_name": agent_name,
+        "session_id": AGENTS[agent_name].get("session_id", ""),
+        "created_at": int(time.time()),
+    })
     return AGENTS[agent_name]
 
 

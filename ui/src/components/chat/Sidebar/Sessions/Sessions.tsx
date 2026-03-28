@@ -116,6 +116,17 @@ const Sessions = () => {
     if (sessionId) setSelectedSessionId(sessionId)
   }, [sessionId])
 
+  // Re-fetch sessions when a new agent is registered
+  useEffect(() => {
+    const refresh = () => {
+      if (selectedEndpoint && (agentId || teamId)) {
+        getSessions({ entityType: mode, agentId, teamId, dbId })
+      }
+    }
+    window.addEventListener('sessions-refresh', refresh)
+    return () => window.removeEventListener('sessions-refresh', refresh)
+  }, [selectedEndpoint, agentId, teamId, mode, dbId, getSessions])
+
   const handleSessionClick = useCallback(
     (id: string) => () => setSelectedSessionId(id),
     []
