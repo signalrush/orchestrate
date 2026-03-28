@@ -6,8 +6,10 @@ Run: uvicorn api.server:app --port 7777
 import asyncio
 import json
 import os
+import sqlite3
 import time
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +30,21 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, Result
 
 app = FastAPI(title="orchestrate API")
 
+# ---------------------------------------------------------------------------
+# SQLite persistence
+# ---------------------------------------------------------------------------
+
+_DB_PATH = Path.home() / ".orchestrate" / "orchestrate.db"
+
+
+def _db():
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE IF NOT EXISTS agents (name TEXT PRIMARY KEY, resume_id TEXT, config TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, session_id TEXT, source TEXT, input TEXT, content TEXT, tools TEXT, created_at INTEGER)")
+    return conn
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,6 +52,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def load_persisted_agents():
+    conn = _db()
+    for row in conn.execute("SELECT name, resume_id, config FROM agents").fetchall():
+        name = row["name"]
+        config = json.loads(row["config"]) if row["config"] else {}
+        if name not in AGENTS:
+            AGENTS[name] = config
+            AGENTS[name]["resume_id"] = row["resume_id"]
+    # Rebuild sessions from persisted runs
+    for row in conn.execute("SELECT DISTINCT agent_name, session_id FROM runs").fetchall():
+        sid = row["session_id"]
+        if sid and sid not in SESSIONS:
+            SESSIONS[sid] = {
+                "session_id": sid,
+                "session_name": row["agent_name"],
+                "agent_id": "orchestrator",
+                "created_at": 0,
+                "updated_at": 0,
+            }
+            ts = conn.execute("SELECT MIN(created_at) as first, MAX(created_at) as last FROM runs WHERE session_id = ?", (sid,)).fetchone()
+            if ts:
+                SESSIONS[sid]["created_at"] = ts["first"] or 0
+                SESSIONS[sid]["updated_at"] = ts["last"] or 0
+    conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -157,6 +201,11 @@ async def _process_agent_message(message, source, agent_name, session_id, config
         "created_at": int(time.time()),
         "source": source,
     })
+    conn = _db()
+    conn.execute("INSERT INTO runs (agent_name, session_id, source, input, content, tools, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (agent_name, session_id, source, message, accumulated_text, json.dumps(tools_used), int(time.time())))
+    conn.commit()
+    conn.close()
     if session_id in SESSIONS:
         SESSIONS[session_id]["updated_at"] = int(time.time())
 
@@ -167,7 +216,7 @@ async def _agent_worker(agent_name: str):
     """Background worker: pulls from agent's queue, processes sequentially."""
     queue = AGENT_QUEUES[agent_name]
     config = AGENTS.get(agent_name, {})
-    resume_id = None
+    resume_id = config.get("resume_id")
 
     try:
         while True:
@@ -207,6 +256,10 @@ async def _agent_worker(agent_name: str):
                     item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
                 )
                 resume_id = new_resume_id
+                conn = _db()
+                conn.execute("UPDATE agents SET resume_id = ? WHERE name = ?", (resume_id, agent_name))
+                conn.commit()
+                conn.close()
                 if item_future and not item_future.done():
                     item_future.set_result(response_text)
             except Exception as e:
@@ -275,6 +328,11 @@ async def register_agent(request: Request):
         "tools": data.get("tools", ALL_TOOLS),
         "prompt": data.get("prompt", ""),
     }
+    conn = _db()
+    conn.execute("INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
+                 (agent_name, None, json.dumps(AGENTS[agent_name])))
+    conn.commit()
+    conn.close()
     # Create worker + session so it appears in sidebar immediately
     _ensure_agent_worker(agent_name)
     # Notify the orchestrator's SSE stream so UI refreshes sidebar
@@ -357,6 +415,11 @@ async def delete_agent(agent_name: str):
     worker = AGENT_WORKERS.pop(agent_name, None)
     if worker and not worker.done():
         worker.cancel()
+    conn = _db()
+    conn.execute("DELETE FROM agents WHERE name = ?", (agent_name,))
+    conn.execute("DELETE FROM runs WHERE agent_name = ?", (agent_name,))
+    conn.commit()
+    conn.close()
     return {"status": "deleted"}
 
 
@@ -437,7 +500,19 @@ async def get_session_runs(
     session_id: str,
     session_type: str = Query("agent"),
 ):
-    return RUNS.get(session_id, [])
+    runs = RUNS.get(session_id, [])
+    if not runs:
+        conn = _db()
+        rows = conn.execute("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at", (session_id,)).fetchall()
+        conn.close()
+        runs = [{
+            "run_input": r["input"],
+            "content": r["content"],
+            "tools": json.loads(r["tools"]) if r["tools"] else [],
+            "created_at": r["created_at"],
+            "source": r["source"],
+        } for r in rows]
+    return runs
 
 
 @app.delete("/sessions/{session_id}")
