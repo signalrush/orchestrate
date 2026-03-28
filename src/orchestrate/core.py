@@ -104,10 +104,13 @@ class Orchestrate:
 
         for attempt in range(max_attempts):
             prompt = instruction
-            if schema and attempt > 0:
+            if schema:
                 schema_desc = json.dumps(schema, indent=2)
-                prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
-                           f"Keys and types:\n{schema_desc}")
+                if attempt == 0:
+                    prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
+                else:
+                    prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
+                               f"Keys and types:\n{schema_desc}")
 
             resp = await self._client.post(
                 f"/agents/{to}/message",
@@ -123,7 +126,12 @@ class Orchestrate:
                 return result_text
 
             try:
-                return _parse_json(result_text)
+                parsed = _parse_json(result_text)
+                # Validate schema keys exist
+                missing = [k for k in schema if k not in parsed]
+                if missing:
+                    raise ValueError(f"Missing keys in response: {missing}")
+                return parsed
             except ValueError as e:
                 last_error = e
                 print(f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
