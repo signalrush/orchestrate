@@ -26,20 +26,9 @@ const ChatInput = () => {
     setInputMessage('')
 
     try {
-      if (sessionId) {
-        // Session exists: push to queue
-        const endpointUrl = constructEndpointUrl(selectedEndpoint)
-        const formData = new FormData()
-        formData.append('message', currentMessage)
-        formData.append('source', 'user')
-        await fetch(`${endpointUrl}/sessions/${sessionId}/message`, {
-          method: 'POST',
-          body: formData,
-        }).catch(() => {})
-      } else {
-        // No session: create stream (first message)
-        await handleStreamResponse(currentMessage)
-      }
+      // Always go through handleStreamResponse — it opens an SSE stream
+      // and pushes the message. The server reuses the existing session.
+      await handleStreamResponse(currentMessage)
     } catch (error) {
       toast.error(
         `Error in handleSubmit: ${
