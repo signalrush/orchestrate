@@ -406,18 +406,8 @@ async def post_agent_message(
 
 @app.get("/agents/{agent_name}/events")
 async def agent_events(agent_name: str):
-    """SSE stream reading from agent's SSE queue."""
-    if agent_name not in AGENTS:
-        return JSONResponse({"error": "agent not found"}, status_code=404)
-
-    _ensure_agent_worker(agent_name)
-
-    async def generate():
-        while True:
-            event_str = await TEAM_SSE.get()
-            yield event_str
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    """Redirect to team events stream."""
+    return await team_events()
 
 
 @app.delete("/agents/{agent_name}")
@@ -470,21 +460,18 @@ async def run_agent(
         "session_id": session_id,
     })
 
-    async def generate():
-        yield json.dumps({
-            "event": "RunStarted",
-            "session_id": session_id,
-            "run_id": run_id,
-            "agent_name": agent_name,
-            "content_type": "text/plain",
-            "created_at": now,
-        })
+    # Emit RunStarted to team stream
+    _emit({
+        "event": "RunStarted",
+        "session_id": session_id,
+        "run_id": run_id,
+        "agent_name": agent_name,
+        "content_type": "text/plain",
+        "created_at": now,
+    })
 
-        while True:
-            event_str = await TEAM_SSE.get()
-            yield event_str
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    # Return the team SSE stream (same as GET /teams/default/events)
+    return await team_events()
 
 
 # ---------------------------------------------------------------------------
