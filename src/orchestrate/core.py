@@ -1,22 +1,9 @@
 """orchestrate core — Orchestrate class and helpers."""
 
 import json
-import os
 import re
+import urllib.request
 from typing import Any
-
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, ResultMessage
-except ImportError:
-    query = None
-    ClaudeAgentOptions = None
-    AssistantMessage = None
-    ResultMessage = None
-
-ALL_TOOLS = [
-    "Read", "Edit", "Write", "Bash", "Glob", "Grep",
-    "Agent", "WebSearch", "WebFetch", "Skill",
-]
 
 
 def _parse_json(text: str, schema: dict) -> dict:
@@ -73,139 +60,27 @@ def _parse_json(text: str, schema: dict) -> dict:
 
 
 class Orchestrate:
-    """Orchestrate multiple Claude agents via the Agent SDK.
+    """Orchestrate multiple Claude agents via the REST API."""
 
-    Each agent (including 'self') maintains its own session.
-    run() sends to self or a named agent.
-    """
-
-    def __init__(self, cwd: str | None = None, model: str = "claude-sonnet-4-6",
-                 api_url: str | None = None, session_id: str | None = None,
-                 program_name: str | None = None):
-        self._sessions: dict[str, dict] = {}
-        self._cwd = cwd or os.getcwd()
-        self._model = model
+    def __init__(self, api_url: str | None = None):
         self._api_url = api_url
-        self._session_id = session_id
-        self._team_id: str | None = None
-        self._program_name = program_name
 
-        if self._api_url and self._session_id:
-            self._register_team()
+    def agent(self, name: str, cwd: str | None = None, model: str | None = None,
+              tools: list | None = None, prompt: str | None = None) -> None:
+        """Declare a named agent via POST /agents."""
+        config: dict[str, Any] = {"name": name}
+        if cwd is not None:
+            config["cwd"] = cwd
+        if model is not None:
+            config["model"] = model
+        if tools is not None:
+            config["tools"] = tools
+        if prompt is not None:
+            config["prompt"] = prompt
+        self._post_json("/agents", config)
 
-    def _register_team(self):
-        """Register this program as a team via the API."""
-        import urllib.request
-        data = json.dumps({
-            "id": self._session_id,
-            "name": self._program_name or "program",
-            "session_id": self._session_id,
-            "model": {"name": self._model, "model": self._model, "provider": "anthropic"},
-        }).encode()
-        req = urllib.request.Request(
-            f"{self._api_url}/teams",
-            data=data,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
-                self._team_id = result.get("id")
-        except Exception as e:
-            print(f"[orchestrate] Warning: _register_team failed: {e}", flush=True)
-
-    def _register_member(self, name: str):
-        """Register a named agent as a team member via the API."""
-        import urllib.request
-        data = json.dumps({"name": name}).encode()
-        req = urllib.request.Request(
-            f"{self._api_url}/teams/{self._team_id}/members",
-            data=data,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
-                self._sessions[name]["api_session_id"] = result.get("session_id")
-        except Exception as e:
-            print(f"[orchestrate] Warning: _register_member({name}) failed: {e}", flush=True)
-
-    def agent(self, name: str, cwd: str | None = None) -> None:
-        """Declare a named agent. Optional — run() auto-creates on first use."""
-        if name not in self._sessions:
-            self._sessions[name] = {
-                "session_id": None,
-                "cwd": cwd or self._cwd,
-            }
-            if self._api_url and self._team_id:
-                self._register_member(name)
-
-    async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
-        """Send instruction to a named agent. Defaults to self. Accumulates session context."""
-        # API mode: route through API
-        if self._api_url:
-            if to == "self":
-                return await self._remind_via_api(instruction, schema)
-            # Sub-agent: route through member's API session
-            api_sid = self._sessions.get(to, {}).get("api_session_id")
-            if not api_sid:
-                raise RuntimeError(
-                    f"[orchestrate] Sub-agent '{to}' has no API session — "
-                    "member registration failed. Check earlier warnings and "
-                    "ensure the API is reachable."
-                )
-            return await self._remind_via_api(instruction, schema, session_id=api_sid, source="remind")
-
-        # SDK mode: direct Agent SDK call
-        if to not in self._sessions:
-            self.agent(to)
-
-        prompt = instruction
-        if schema:
-            schema_desc = json.dumps(schema, indent=2)
-            prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
-
-        agent = self._sessions[to]
-        opts = ClaudeAgentOptions(
-            allowed_tools=ALL_TOOLS,
-            permission_mode="bypassPermissions",
-            cwd=agent["cwd"],
-            model=self._model,
-            resume=agent["session_id"],
-        )
-
-        result_text = ""
-        async for msg in query(prompt=prompt, options=opts):
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if hasattr(block, "text"):
-                        result_text += block.text
-            elif isinstance(msg, ResultMessage):
-                agent["session_id"] = msg.session_id
-
-        print(f"[{to}] {result_text[:200]}", flush=True)
-
-        if schema:
-            return _parse_json(result_text, schema)
-        return result_text
-
-    async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
-        """Deprecated. Use run() instead."""
-        return await self.run(instruction, schema=schema)
-
-    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
-        """Deprecated. Use run(instruction, to=...) instead."""
-        return await self.run(instruction, to=to, schema=schema)
-
-    async def _remind_via_api(self, instruction: str, schema: dict | None = None,
-                              session_id: str | None = None, source: str = "remind") -> str | dict:
-        """Send message via HTTP POST to the session message endpoint."""
-        import urllib.request
-        import urllib.parse
-
-        target_session = session_id or self._session_id
+    def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
+        """Send instruction to a named agent via POST /agents/{to}/message."""
         max_attempts = 3 if schema else 1
         last_error = None
 
@@ -216,30 +91,10 @@ class Orchestrate:
                 prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
                            f"Keys and types:\n{schema_desc}")
 
-            form_fields = {
-                "message": prompt,
-                "source": source,
-            }
+            result = self._post_json(f"/agents/{to}/message", {"message": prompt})
+            result_text = result.get("content", "") if isinstance(result, dict) else str(result)
 
-            data = urllib.parse.urlencode(form_fields).encode()
-
-            req = urllib.request.Request(
-                f"{self._api_url}/sessions/{target_session}/message",
-                data=data,
-                method="POST",
-            )
-
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                body = resp.read().decode()
-
-            result_text = ""
-            try:
-                result = json.loads(body)
-                result_text = result.get("content", "")
-            except json.JSONDecodeError:
-                result_text = body
-
-            print(f"[{source}] {result_text[:200]}", flush=True)
+            print(f"[{to}] {result_text[:200]}", flush=True)
 
             if not schema:
                 return result_text
@@ -248,9 +103,30 @@ class Orchestrate:
                 return _parse_json(result_text, schema)
             except ValueError as e:
                 last_error = e
-                print(f"[{source}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
+                print(f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
 
         raise last_error
+
+    def _post_json(self, path: str, data: dict) -> dict:
+        """POST JSON to path under api_url and return parsed response."""
+        url = f"{self._api_url}{path}"
+        body = json.dumps(data).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read().decode())
+
+    async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
+        """Deprecated. Use run() instead."""
+        return self.run(instruction, schema=schema)
+
+    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
+        """Deprecated. Use run(instruction, to=...) instead."""
+        return self.run(instruction, to=to, schema=schema)
 
 
 Auto = Orchestrate  # deprecated alias
