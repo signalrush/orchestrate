@@ -13,7 +13,7 @@ import { getJsonMarkdown } from '@/lib/utils'
 
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
-  const { addMessage, focusChatInput } = useChatActions()
+  const { focusChatInput } = useChatActions()
   const [agentId] = useQueryState('agent')
   const [teamId] = useQueryState('team')
   const [sessionId, setSessionId] = useQueryState('session')
@@ -293,6 +293,7 @@ const useAIChatStreamHandler = () => {
                   lastMessage.content += jsonBlock
                   lastContent = jsonBlock
                 } else if (
+                  lastMessage &&
                   chunk.response_audio?.transcript &&
                   typeof chunk.response_audio?.transcript === 'string'
                 ) {
@@ -449,7 +450,6 @@ const useAIChatStreamHandler = () => {
     },
     [
       setMessages,
-      addMessage,
       updateMessagesWithErrorState,
       selectedEndpoint,
       authToken,

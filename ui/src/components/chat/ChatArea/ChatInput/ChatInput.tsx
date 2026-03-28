@@ -36,7 +36,7 @@ const ChatInput = () => {
         fetch(`${endpointUrl}/sessions/${sessionId}/message`, {
           method: 'POST',
           body: formData,
-        })
+        }).catch(() => {})
       }
     }
   }, [sessionId, selectedEndpoint])
@@ -63,7 +63,7 @@ const ChatInput = () => {
         await fetch(`${endpointUrl}/sessions/${sessionId}/message`, {
           method: 'POST',
           body: formData,
-        })
+        }).catch(() => {})
       } else {
         // No active stream: create new stream
         streamActiveRef.current = true

@@ -62,7 +62,6 @@ SESSIONS: dict[str, dict] = {}
 RUNS: dict[str, list] = {}
 
 # Agent-keyed stores
-AGENT_SESSIONS: dict[str, str] = {}        # name → session_id (resume id from SDK)
 AGENT_QUEUES: dict[str, asyncio.Queue] = {}  # name → input Queue
 AGENT_SSE: dict[str, asyncio.Queue] = {}    # name → output Queue
 AGENT_WORKERS: dict[str, asyncio.Task] = {} # name → Task
@@ -331,7 +330,6 @@ async def delete_agent(agent_name: str):
     AGENTS.pop(agent_name, None)
     AGENT_QUEUES.pop(agent_name, None)
     AGENT_SSE.pop(agent_name, None)
-    AGENT_SESSIONS.pop(agent_name, None)
     worker = AGENT_WORKERS.pop(agent_name, None)
     if worker and not worker.done():
         worker.cancel()
