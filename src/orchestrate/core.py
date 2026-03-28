@@ -39,9 +39,12 @@ def _parse_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Try 3: find first { ... }
-    brace_start = text.find("{")
-    if brace_start >= 0:
+    # Try 3: find { ... } substrings, try each one
+    pos = 0
+    while pos < len(text):
+        brace_start = text.find("{", pos)
+        if brace_start < 0:
+            break
         depth = 0
         for i in range(brace_start, len(text)):
             if text[i] == "{":
@@ -56,6 +59,7 @@ def _parse_json(text: str) -> dict:
                     except json.JSONDecodeError:
                         pass
                     break
+        pos = brace_start + 1
 
     raise ValueError(f"No valid JSON found in response: {text[:200]}")
 
