@@ -79,7 +79,7 @@ class Orchestrate:
             config["prompt"] = prompt
         self._post_json("/agents", config)
 
-    def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
+    async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
         """Send instruction to a named agent via POST /agents/{to}/message."""
         max_attempts = 3 if schema else 1
         last_error = None
@@ -91,7 +91,7 @@ class Orchestrate:
                 prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
                            f"Keys and types:\n{schema_desc}")
 
-            result = self._post_json(f"/agents/{to}/message", {"message": prompt})
+            result = self._post_form(f"/agents/{to}/message", {"message": prompt, "source": "run"})
             result_text = result.get("content", "") if isinstance(result, dict) else str(result)
 
             print(f"[{to}] {result_text[:200]}", flush=True)
@@ -117,6 +117,13 @@ class Orchestrate:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read().decode())
+
+    def _post_form(self, path: str, data: dict) -> dict:
+        url = f"{self._api_url}{path}"
+        body = urllib.parse.urlencode(data).encode()
+        req = urllib.request.Request(url, data=body, method="POST")
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read().decode())
 

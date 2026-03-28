@@ -5,17 +5,19 @@ Base URL: `http://localhost:7777`
 ## Architecture
 
 ```
-Browser ←── SSE stream ←── SESSION_SSE queue ←── Worker emits events
-                                                      ↑
-POST /agents/{id}/runs ──→ SESSION_QUEUES ──→ Worker pulls & processes
-POST /sessions/{id}/message ──→ SESSION_QUEUES     (sequential, FIFO)
-Program POST /sessions/{id}/message ──→ SESSION_QUEUES
+Browser ←── SSE stream ←── AGENT_SSE queue ←── Worker emits events
+                                                    ↑
+POST /agents/{name}/runs ──→ AGENT_QUEUES ──→ Worker pulls & processes
+POST /agents/{name}/message ──→ AGENT_QUEUES    (sequential, FIFO)
 ```
 
-Each session has:
-- **Queue** (`SESSION_QUEUES`): input — all messages go here
-- **Worker** (`SESSION_WORKERS`): background task — processes queue items one by one
-- **SSE channel** (`SESSION_SSE`): output — worker pushes events, stream reads them
+The core primitive is an **agent**, identified by name. The server manages one session per agent internally. Each agent has:
+
+- **Queue** (`AGENT_QUEUES`): input — all messages go here
+- **Worker** (`AGENT_WORKERS`): background task — processes queue items one by one
+- **SSE channel** (`AGENT_SSE`): output — worker pushes events, stream reads them
+
+The orchestrate client is pure HTTP — no SDK dependency.
 
 ## Endpoints
 
@@ -29,7 +31,10 @@ Health check.
 ### `GET /agents`
 List registered agents.
 
-**Response:** `[{"id": "orchestrator", "name": "Orchestrate Agent", "model": {...}}]`
+**Response:**
+```json
+[{"id": "orchestrator", "name": "orchestrator", "model": "claude-opus-4-6", "cwd": "/path", "tools": [...], "prompt": ""}]
+```
 
 ---
 
@@ -38,61 +43,39 @@ Register a new agent.
 
 **Body (JSON):**
 ```json
-{"id": "my-agent", "name": "My Agent", "model": {"model": "claude-opus-4-6"}}
+{
+  "name": "my-agent",
+  "model": "claude-sonnet-4-6",
+  "cwd": "/path/to/workdir",
+  "tools": ["Read", "Edit", "Bash"],
+  "prompt": "optional system prompt"
+}
 ```
+
+If `name` is omitted a UUID is generated. All fields except `name` are optional and default to server values.
+
+**Response:** The registered agent object.
 
 ---
 
-### `POST /agents/{agent_id}/runs`
-Start a new conversation turn. Creates session, starts worker, pushes message to queue, returns SSE stream.
+### `DELETE /agents/{name}`
+Remove an agent and clean up its queue, worker, and SSE channel.
 
-**Form fields:**
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `message` | string | required | The user's message |
-| `stream` | string | `"true"` | Always true (SSE) |
-| `session_id` | string | auto-generated | Reuse existing session or create new |
-| `source` | string | `"user"` | Message source (`user`) |
-
-**Response:** SSE stream of JSON events:
-
-```
-{"event": "RunStarted", "session_id": "abc-123", "run_id": "...", "agent_id": "orchestrator"}
-{"event": "RunContent", "content": "hi", "source": "user", "session_id": "abc-123"}
-{"event": "RunContent", "content": "Hello!", "session_id": "abc-123"}
-{"event": "ToolCallStarted", "tools": [...], "session_id": "abc-123"}
-{"event": "RunContent", "content": "say hello", "source": "remind", "session_id": "abc-123"}
-{"event": "RunContent", "content": "Hello there!", "session_id": "abc-123"}
-{"event": "RunCompleted", "content": "", "session_id": "abc-123"}
-```
-
-**Event types:**
-| Event | Description |
-|-------|-------------|
-| `RunStarted` | Stream opened, session created |
-| `RunContent` | Text content. If `source` is set, it's a source marker (creates bubble). If no `source`, it's accumulated response text. |
-| `ToolCallStarted` | Agent used a tool |
-| `RunCompleted` | Worker finished, stream ends |
-| `RunError` | Error occurred |
-
-**Source markers:** When the worker starts processing a queue item, it emits a `RunContent` with a `source` field:
-- `source: "user"` → frontend creates user bubble + empty agent bubble
-- `source: "remind"` → frontend creates remind bubble + empty agent bubble
-
-Subsequent `RunContent` events (without `source`) fill the agent bubble with accumulated text.
+**Response:** `{"status": "deleted"}`
 
 ---
 
-### `POST /sessions/{session_id}/message`
-Push a message to an active session's queue. **Blocks until the worker processes it and returns the response.** Used by:
-- Frontend (follow-up messages during active stream)
-- Programs (`auto.remind()` calls)
+### `POST /agents/{name}/message`
+Push a message to the agent's queue. **Blocks until the worker processes it and returns the response.**
+
+Used by orchestrate programs and any HTTP client that needs a synchronous reply.
 
 **Form fields:**
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `message` | string | required | The message text |
-| `source` | string | `"user"` | `"user"` or `"remind"` |
+| `source` | string | `"user"` | Message source (`"user"`, `"remind"`, etc.) |
+| `session_id` | string | agent name | Override session id |
 
 **Response:**
 ```json
@@ -100,88 +83,116 @@ Push a message to an active session's queue. **Blocks until the worker processes
 ```
 
 **Errors:**
-- `400` — no active worker/queue for this session
+- `404` — agent not found
 
 ---
 
-### `POST /sessions/{session_id}/program-done`
-Signal that an orchestrate program has finished. Pushes a `{"type": "done"}` sentinel to the queue, causing the worker to stop after processing remaining items.
+### `GET /agents/{name}/events`
+SSE stream of all events emitted by the agent's worker.
 
-**Response:** `{"status": "ok"}`
+**Response:** `text/event-stream` of JSON lines:
+
+```
+{"event": "MessageQueued", "content": "hello", "source": "user", ...}
+{"event": "MessageDequeued", "content": "hello", "source": "user", ...}
+{"event": "RunContent", "content": "hello", "source": "user", "run_id": "...", ...}
+{"event": "RunContent", "content": "Hello there!", "run_id": "...", ...}
+{"event": "ToolCallStarted", "tools": [...], "run_id": "...", ...}
+```
 
 ---
+
+### `POST /agents/{id}/runs`
+UI entry point. Creates a session, starts the agent's worker, pushes the message, and returns an SSE stream.
+
+**Form fields:**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `message` | string | required | The user's message |
+| `stream` | string | `"true"` | Always SSE |
+| `session_id` | string | auto-generated | Reuse existing session or create new |
+| `source` | string | `"user"` | Message source |
+
+**Response:** SSE stream starting with `RunStarted`, then forwarding from the agent's SSE channel:
+
+```
+{"event": "RunStarted", "session_id": "abc-123", "run_id": "...", "agent_id": "orchestrator"}
+{"event": "RunContent", "content": "hello", "source": "user", ...}
+{"event": "RunContent", "content": "Hello!", ...}
+{"event": "ToolCallStarted", "tools": [...], ...}
+```
+
+**Event types:**
+| Event | Description |
+|-------|-------------|
+| `RunStarted` | Stream opened, session created |
+| `MessageQueued` | Message entered the queue |
+| `MessageDequeued` | Worker picked up the message |
+| `RunContent` | Text chunk. If `source` is set, it's a source marker (creates chat bubble). Without `source`, it's accumulated response text. |
+| `ToolCallStarted` | Agent used a tool |
+
+---
+
+## Session endpoints
+
+Sessions are managed internally by the server (one per agent). These endpoints let the UI list and reload history.
 
 ### `GET /sessions`
 List all sessions.
 
-**Query params:** `type`, `component_id`, `db_id` (all optional, for filtering)
+**Query params:** `type`, `component_id` (filters by `agent_id`), `db_id`
 
 **Response:**
 ```json
 {
   "data": [
-    {
-      "session_id": "abc-123",
-      "session_name": "hello 13:04",
-      "agent_id": "orchestrator",
-      "created_at": 1774641234,
-      "updated_at": 1774641300
-    }
+    {"session_id": "abc-123", "session_name": "hello 13:04", "agent_id": "orchestrator", "created_at": 1774641234, "updated_at": 1774641300}
   ]
 }
 ```
 
----
-
 ### `GET /sessions/{session_id}/runs`
-Get stored runs (message history) for a session. Used by frontend to reload session on navigation.
+Message history for a session.
 
 **Response:**
 ```json
-[
-  {
-    "run_input": "hello",
-    "content": "Hi! How can I help?",
-    "tools": [],
-    "created_at": 1774641234,
-    "source": "user"
-  },
-  {
-    "run_input": "say something random",
-    "content": "Octopuses have three hearts!",
-    "tools": [],
-    "created_at": 1774641250,
-    "source": "remind"
-  }
-]
+[{"run_input": "hello", "content": "Hi!", "tools": [], "created_at": 1774641234, "source": "user"}]
 ```
 
----
-
 ### `DELETE /sessions/{session_id}`
-Delete a session and all associated state (queue, worker, SSE channel, runs).
+Delete a session and its run history.
 
 **Response:** `{"status": "deleted"}`
 
 ---
 
-## Worker Lifecycle
+## Backwards compatibility
 
-1. **Created** by `_ensure_worker()` on first `POST /agents/{id}/runs`
-2. **Processes** queue items sequentially (FIFO)
-3. **Emits** source marker → runs `_process_message()` → emits RunContent/ToolCallStarted events
-4. **Resolves** futures for `/message` callers
-5. **Stops** on `program-done` signal or `QUEUE_IDLE_TIMEOUT` (5 min)
-6. **Emits** `RunCompleted` and cleans up
+### `POST /sessions/{session_id}/message`
+Routes to the agent that owns the session. Same request/response shape as `POST /agents/{name}/message`.
 
-## Program Integration
+**Errors:**
+- `400` — no agent found for session
 
-Programs run via `orchestrate-run <file.py>` as background processes. They:
-1. Get `ORCHESTRATE_API_URL` and `ORCHESTRATE_SESSION_ID` from environment
-2. Call `auto.remind(instruction)` → posts to `POST /sessions/{id}/message` with `source=remind`
-3. Block until the worker processes the remind and returns the response
-4. On exit, send `POST /sessions/{id}/program-done`
+### `POST /sessions/{session_id}/program-done`
+Signal that an orchestrate program has finished. Pushes a `{"type": "done"}` sentinel to the owning agent's queue.
 
-## In-Memory Only
+**Response:** `{"status": "ok"}`
+
+---
+
+## Program integration
+
+Programs running under orchestrate receive these env vars:
+
+| Variable | Value |
+|----------|-------|
+| `ORCHESTRATE_API_URL` | `http://localhost:7777` |
+| `ORCHESTRATE_SESSION_ID` | session id |
+| `ORCHESTRATE_AGENT_NAME` | agent name |
+
+Typical pattern: call `POST /agents/{name}/message` (or the compat `/sessions/{id}/message`) with `source=remind`, block on the response, then `POST /sessions/{id}/program-done` on exit.
+
+## In-memory only
 
 All state is in-memory. Server restart clears everything. This is by design for a dev tool.
