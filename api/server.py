@@ -241,6 +241,11 @@ def _ensure_agent_worker(agent_name: str):
             AGENT_QUEUES[agent_name] = asyncio.Queue()
         if agent_name not in AGENT_SSE:
             AGENT_SSE[agent_name] = asyncio.Queue()
+        # Create session visible in sidebar (agent_id="orchestrator" so sidebar filter includes it)
+        session_id = agent_name
+        if session_id not in SESSIONS:
+            _ensure_session(session_id, "orchestrator")
+            SESSIONS[session_id]["session_name"] = agent_name
         AGENT_WORKERS[agent_name] = asyncio.create_task(
             _agent_worker(agent_name)
         )
