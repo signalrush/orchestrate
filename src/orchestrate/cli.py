@@ -85,9 +85,15 @@ class _LazyOrchestrate:
     def __getattr__(self, name: str):
         return getattr(self._get(), name)
 
+    async def __aenter__(self):
+        return await self._get().__aenter__()
+
+    async def __aexit__(self, *args):
+        return await self._get().__aexit__(*args)
+
 
 def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
-    """Import and run user's async main(auto) in-process. Updates run.json on finish."""
+    """Import and run user's async main(orch) in-process. Updates run.json on finish."""
     run_dir = Path(run_dir_path)
     data = json.loads((run_dir / "run.json").read_text())
 
@@ -105,17 +111,19 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
         sig = inspect.signature(main_fn)
         params = list(sig.parameters.keys())
 
-        auto = _LazyOrchestrate()
+        orch = _LazyOrchestrate()
 
-        if params:
-            coro = main_fn(auto)
-        else:
-            coro = main_fn()
+        async def _run_with_cleanup(main_fn, orch, params):
+            try:
+                if params:
+                    await main_fn(orch)
+                else:
+                    await main_fn()
+            finally:
+                if hasattr(orch, '_real') and orch._real is not None:
+                    await orch._real.aclose()
 
-        asyncio.run(coro)
-        # The event loop is closed after asyncio.run(); the AsyncClient held by
-        # _LazyOrchestrate will be garbage-collected — acceptable for this
-        # short-lived subprocess.
+        asyncio.run(_run_with_cleanup(main_fn, orch, bool(params)))
 
         data["status"] = "done"
     except Exception as exc:

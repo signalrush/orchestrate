@@ -128,7 +128,9 @@ class Orchestrate:
                 last_error = e
                 print(f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
 
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        raise ValueError("Schema parsing failed after all attempts")
 
     async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
         """Deprecated. Use run() instead."""
