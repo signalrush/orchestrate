@@ -220,16 +220,7 @@ async def _agent_worker(agent_name: str):
                 if item_future and not item_future.done():
                     item_future.set_exception(e)
 
-            # No RunCompleted here — stream stays open for program reminds
-
-            # Signal this run is complete
-            _emit_agent(agent_name, {
-                "event": "RunCompleted",
-                "content": "",
-                "session_id": session_id,
-                "run_id": item_run_id,
-                "created_at": int(time.time()),
-            })
+            # No RunCompleted — stream stays open for program reminds
     except asyncio.CancelledError:
         return
 
