@@ -39,7 +39,7 @@ List registered agents.
 ---
 
 ### `POST /agents`
-Register a new agent.
+Register a new agent. Also calls `_ensure_agent_worker` to start the worker immediately and emits an `AgentRegistered` event to the orchestrator's SSE stream so the UI sidebar refreshes.
 
 **Body (JSON):**
 ```json
@@ -70,6 +70,8 @@ Push a message to the agent's queue. **Blocks until the worker processes it and 
 
 Used by orchestrate programs and any HTTP client that needs a synchronous reply.
 
+`"self"` is an alias for `"orchestrator"` — sending to `/agents/self/message` routes to the orchestrator agent.
+
 **Form fields:**
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -88,7 +90,7 @@ Used by orchestrate programs and any HTTP client that needs a synchronous reply.
 ---
 
 ### `GET /agents/{name}/events`
-SSE stream of all events emitted by the agent's worker.
+SSE stream of all events emitted by the agent's worker. The stream never terminates.
 
 **Response:** `text/event-stream` of JSON lines:
 
@@ -102,21 +104,21 @@ SSE stream of all events emitted by the agent's worker.
 
 ---
 
-### `POST /agents/{id}/runs`
-UI entry point. Creates a session, starts the agent's worker, pushes the message, and returns an SSE stream.
+### `POST /agents/{agent_name}/runs`
+UI entry point. Creates a session, starts the agent's worker, pushes the message, and returns an SSE stream. The stream never terminates — it stays open for subsequent messages (e.g. program reminds).
 
 **Form fields:**
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `message` | string | required | The user's message |
 | `stream` | string | `"true"` | Always SSE |
-| `session_id` | string | auto-generated | Reuse existing session or create new |
+| `session_id` | string | agent's existing session or new UUID | Reuse existing session or create new |
 | `source` | string | `"user"` | Message source |
 
 **Response:** SSE stream starting with `RunStarted`, then forwarding from the agent's SSE channel:
 
 ```
-{"event": "RunStarted", "session_id": "abc-123", "run_id": "...", "agent_id": "orchestrator"}
+{"event": "RunStarted", "session_id": "abc-123", "run_id": "...", "agent_name": "orchestrator"}
 {"event": "RunContent", "content": "hello", "source": "user", ...}
 {"event": "RunContent", "content": "Hello!", ...}
 {"event": "ToolCallStarted", "tools": [...], ...}
@@ -126,10 +128,12 @@ UI entry point. Creates a session, starts the agent's worker, pushes the message
 | Event | Description |
 |-------|-------------|
 | `RunStarted` | Stream opened, session created |
+| `AgentRegistered` | A new agent was registered (emitted on orchestrator's stream) |
 | `MessageQueued` | Message entered the queue |
 | `MessageDequeued` | Worker picked up the message |
 | `RunContent` | Text chunk. If `source` is set, it's a source marker (creates chat bubble). Without `source`, it's accumulated response text. |
 | `ToolCallStarted` | Agent used a tool |
+| `RunError` | Worker encountered an error processing a message |
 
 ---
 
@@ -140,7 +144,7 @@ Sessions are managed internally by the server (one per agent). These endpoints l
 ### `GET /sessions`
 List all sessions.
 
-**Query params:** `type`, `component_id` (filters by `agent_id`), `db_id`
+**Query params:** `session_type` (default `"agent"`), `component_id` (filters by `agent_id`)
 
 **Response:**
 ```json
@@ -153,6 +157,8 @@ List all sessions.
 
 ### `GET /sessions/{session_id}/runs`
 Message history for a session.
+
+**Query params:** `session_type` (default `"agent"`)
 
 **Response:**
 ```json
@@ -174,24 +180,17 @@ Routes to the agent that owns the session. Same request/response shape as `POST 
 **Errors:**
 - `400` — no agent found for session
 
-### `POST /sessions/{session_id}/program-done`
-Signal that an orchestrate program has finished. Pushes a `{"type": "done"}` sentinel to the owning agent's queue.
-
-**Response:** `{"status": "ok"}`
-
 ---
 
 ## Program integration
 
-Programs running under orchestrate receive these env vars:
+Programs running under orchestrate receive one env var:
 
 | Variable | Value |
 |----------|-------|
 | `ORCHESTRATE_API_URL` | `http://localhost:7777` |
-| `ORCHESTRATE_SESSION_ID` | session id |
-| `ORCHESTRATE_AGENT_NAME` | agent name |
 
-Typical pattern: call `POST /agents/{name}/message` (or the compat `/sessions/{id}/message`) with `source=remind`, block on the response, then `POST /sessions/{id}/program-done` on exit.
+Typical pattern: call `POST /agents/{name}/message` with `source=remind` and block on the response. The agent name and session context are managed server-side.
 
 ## In-memory only
 
