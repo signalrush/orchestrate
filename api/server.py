@@ -253,6 +253,11 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/teams")
+async def list_teams():
+    return []
+
+
 @app.get("/agents")
 async def list_agents():
     return list(AGENTS.values())
