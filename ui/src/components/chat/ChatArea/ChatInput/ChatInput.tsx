@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import { TextArea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
@@ -18,28 +18,6 @@ const ChatInput = () => {
   const [sessionId] = useQueryState('session')
   const selectedEndpoint = useStore((state) => state.selectedEndpoint)
   const [inputMessage, setInputMessage] = useState('')
-  const isStreaming = useStore((state) => state.isStreaming)
-  // Synchronous guard to prevent duplicate streams (React state is async)
-  const streamActiveRef = useRef(false)
-  // Buffer for messages sent before sessionId is ready
-  const pendingMessagesRef = useRef<string[]>([])
-
-  // Flush pending messages when sessionId becomes available
-  useEffect(() => {
-    if (sessionId && pendingMessagesRef.current.length > 0) {
-      const msgs = pendingMessagesRef.current.splice(0)
-      const endpointUrl = constructEndpointUrl(selectedEndpoint)
-      for (const msg of msgs) {
-        const formData = new FormData()
-        formData.append('message', msg)
-        formData.append('source', 'user')
-        fetch(`${endpointUrl}/sessions/${sessionId}/message`, {
-          method: 'POST',
-          body: formData,
-        }).catch(() => {})
-      }
-    }
-  }, [sessionId, selectedEndpoint])
 
   const handleSubmit = async () => {
     if (!inputMessage.trim()) return
@@ -48,14 +26,8 @@ const ChatInput = () => {
     setInputMessage('')
 
     try {
-      if (isStreaming || streamActiveRef.current) {
-        if (!sessionId) {
-          // Session not ready — buffer silently, flush when sessionId arrives
-          // Don't add local bubbles — the server source marker will create them
-          pendingMessagesRef.current.push(currentMessage)
-          return
-        }
-        // During active stream: push to queue. Server source marker creates bubble.
+      if (sessionId) {
+        // Session exists: push to queue
         const endpointUrl = constructEndpointUrl(selectedEndpoint)
         const formData = new FormData()
         formData.append('message', currentMessage)
@@ -65,13 +37,8 @@ const ChatInput = () => {
           body: formData,
         }).catch(() => {})
       } else {
-        // No active stream: create new stream
-        streamActiveRef.current = true
-        try {
-          await handleStreamResponse(currentMessage)
-        } finally {
-          streamActiveRef.current = false
-        }
+        // No session: create stream (first message)
+        await handleStreamResponse(currentMessage)
       }
     } catch (error) {
       toast.error(

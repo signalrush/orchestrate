@@ -220,14 +220,7 @@ async def _agent_worker(agent_name: str):
                 if item_future and not item_future.done():
                     item_future.set_exception(e)
 
-            # Signal this item is done (UI stream can use this to close)
-            _emit_agent(agent_name, {
-                "event": "RunCompleted",
-                "content": "",
-                "session_id": session_id,
-                "run_id": item_run_id,
-                "created_at": int(time.time()),
-            })
+            # No RunCompleted here — stream stays open for program reminds
 
             # Signal this run is complete
             _emit_agent(agent_name, {
@@ -403,11 +396,6 @@ async def run_agent(
         while True:
             event_str = await sse.get()
             yield event_str
-            try:
-                if json.loads(event_str).get("event") == "RunCompleted":
-                    return
-            except json.JSONDecodeError:
-                pass
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
