@@ -113,7 +113,7 @@ RUNS: dict[str, list] = {}
 
 # Agent-keyed stores
 AGENT_QUEUES: dict[str, asyncio.Queue] = {}  # name → input Queue
-AGENT_SSE: dict[str, asyncio.Queue] = {}    # name → output Queue
+TEAM_SSE: asyncio.Queue = asyncio.Queue()   # single team stream
 AGENT_WORKERS: dict[str, asyncio.Task] = {} # name → Task
 
 
@@ -130,11 +130,9 @@ def _ensure_session(session_id: str, agent_id: str) -> dict:
     return SESSIONS[session_id]
 
 
-def _emit_agent(agent_name: str, event: dict):
-    """Push event to the agent's SSE output channel."""
-    sse = AGENT_SSE.get(agent_name)
-    if sse:
-        sse.put_nowait(json.dumps(event))
+def _emit(event: dict):
+    """Push event to the team SSE stream."""
+    TEAM_SSE.put_nowait(json.dumps(event))
 
 
 async def _process_agent_message(message, source, agent_name, session_id, config, resume_id, run_id):
@@ -168,10 +166,11 @@ async def _process_agent_message(message, source, agent_name, session_id, config
                     if accumulated_text and not accumulated_text[-1].isspace() and block.text and not block.text[0].isspace():
                         accumulated_text += " "
                     accumulated_text += block.text
-                    _emit_agent(agent_name, {
+                    _emit({
                         "event": "RunContent",
                         "content": accumulated_text,
                         "content_type": "text/plain",
+                        "agent_name": agent_name,
                         "session_id": session_id,
                         "run_id": run_id,
                         "created_at": int(time.time()),
@@ -188,10 +187,11 @@ async def _process_agent_message(message, source, agent_name, session_id, config
                         "created_at": int(time.time()),
                     }
                     tools_used.append(tool_record)
-                    _emit_agent(agent_name, {
+                    _emit({
                         "event": "ToolCallStarted",
                         "tools": [tool_record],
                         "content_type": "text/plain",
+                        "agent_name": agent_name,
                         "session_id": session_id,
                         "run_id": run_id,
                         "created_at": int(time.time()),
@@ -237,20 +237,22 @@ async def _agent_worker(agent_name: str):
             session_id = item.get("session_id") or config.get("session_id", agent_name)
 
             # Tell UI this message left the queue
-            _emit_agent(agent_name, {
+            _emit({
                 "event": "MessageDequeued",
                 "content": item_message,
                 "source": item_source,
+                "agent_name": agent_name,
                 "session_id": session_id,
                 "created_at": int(time.time()),
             })
 
             # Source marker — UI adds to main messages
-            _emit_agent(agent_name, {
+            _emit({
                 "event": "RunContent",
                 "content": item_message,
                 "content_type": "text/plain",
                 "source": item_source,
+                "agent_name": agent_name,
                 "session_id": session_id,
                 "run_id": item_run_id,
                 "created_at": int(time.time()),
@@ -270,7 +272,7 @@ async def _agent_worker(agent_name: str):
                 if item_future and not item_future.done():
                     item_future.set_result(response_text)
             except Exception as e:
-                _emit_agent(agent_name, {
+                _emit({
                     "event": "RunError",
                     "content": str(e),
                     "agent_name": agent_name,
@@ -290,8 +292,6 @@ def _ensure_agent_worker(agent_name: str):
     if agent_name not in AGENT_WORKERS or AGENT_WORKERS[agent_name].done():
         if agent_name not in AGENT_QUEUES:
             AGENT_QUEUES[agent_name] = asyncio.Queue()
-        if agent_name not in AGENT_SSE:
-            AGENT_SSE[agent_name] = asyncio.Queue()
         # Create session with UUID (if agent doesn't have one yet)
         if "session_id" not in AGENTS.get(agent_name, {}):
             sid = str(uuid.uuid4())
@@ -318,6 +318,16 @@ async def list_teams():
     return []
 
 
+@app.get("/teams/default/events")
+async def team_events():
+    """Persistent SSE stream. All agent events flow here tagged with agent_name."""
+    async def generate():
+        while True:
+            event_str = await TEAM_SSE.get()
+            yield event_str
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @app.get("/agents")
 async def list_agents():
     return list(AGENTS.values())
@@ -342,8 +352,8 @@ async def register_agent(request: Request):
     conn.close()
     # Create worker + session so it appears in sidebar immediately
     _ensure_agent_worker(agent_name)
-    # Notify the orchestrator's SSE stream so UI refreshes sidebar
-    _emit_agent("orchestrator", {
+    # Notify the team SSE stream so UI refreshes sidebar
+    _emit({
         "event": "AgentRegistered",
         "agent_name": agent_name,
         "session_id": AGENTS[agent_name].get("session_id", ""),
@@ -374,10 +384,11 @@ async def post_agent_message(
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
-    _emit_agent(agent_name, {
+    _emit({
         "event": "MessageQueued",
         "content": message,
         "source": source,
+        "agent_name": agent_name,
         "session_id": session_id,
         "created_at": int(time.time()),
     })
@@ -386,7 +397,6 @@ async def post_agent_message(
         "message": message,
         "source": source,
         "future": future,
-        "session_id": session_id,
         "session_id": session_id,
     })
 
@@ -403,11 +413,8 @@ async def agent_events(agent_name: str):
     _ensure_agent_worker(agent_name)
 
     async def generate():
-        sse = AGENT_SSE.get(agent_name)
-        if not sse:
-            return
         while True:
-            event_str = await sse.get()
+            event_str = await TEAM_SSE.get()
             yield event_str
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -418,7 +425,6 @@ async def delete_agent(agent_name: str):
     """Cleanup agent resources."""
     AGENTS.pop(agent_name, None)
     AGENT_QUEUES.pop(agent_name, None)
-    AGENT_SSE.pop(agent_name, None)
     worker = AGENT_WORKERS.pop(agent_name, None)
     if worker and not worker.done():
         worker.cancel()
@@ -474,12 +480,8 @@ async def run_agent(
             "created_at": now,
         })
 
-        sse = AGENT_SSE.get(agent_name)
-        if not sse:
-            return
-
         while True:
-            event_str = await sse.get()
+            event_str = await TEAM_SSE.get()
             yield event_str
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -554,10 +556,11 @@ async def post_message(
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
-    _emit_agent(agent_name, {
+    _emit({
         "event": "MessageQueued",
         "content": message,
         "source": source,
+        "agent_name": agent_name,
         "session_id": session_id,
         "created_at": int(time.time()),
     })
