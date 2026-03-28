@@ -13,7 +13,7 @@ from fastapi import FastAPI, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from orchestrate.core import Orchestrate, _parse_json
+from orchestrate.core import _parse_json
 
 # Load OAuth token if available
 try:
@@ -37,42 +37,42 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+ALL_TOOLS = ["Read", "Edit", "Write", "Bash", "Glob", "Grep", "Agent", "WebSearch", "WebFetch", "Skill"]
+
+# ---------------------------------------------------------------------------
 # In-memory stores
 # ---------------------------------------------------------------------------
 
 AGENTS: dict[str, dict] = {
     "orchestrator": {
         "id": "orchestrator",
-        "name": "Orchestrate Agent",
-        "db_id": "default",
-        "model": {"name": "claude-opus-4-6", "model": "claude-opus-4-6", "provider": "anthropic"},
-    }
+        "name": "orchestrator",
+        "model": "claude-opus-4-6",
+        "cwd": os.getcwd(),
+        "tools": ALL_TOOLS,
+        "prompt": "",
+    },
+    "self": {
+        "id": "self",
+        "name": "self",
+        "model": "claude-sonnet-4-6",
+        "cwd": os.getcwd(),
+        "tools": ALL_TOOLS,
+        "prompt": "",
+    },
 }
 
 SESSIONS: dict[str, dict] = {}
 RUNS: dict[str, list] = {}
-ORCHESTRATORS: dict[str, Orchestrate] = {}
 
-# Per-session queue + worker + SSE output channel
-SESSION_QUEUES: dict[str, asyncio.Queue] = {}       # input: messages to process
-SESSION_SSE: dict[str, asyncio.Queue] = {}           # output: events pushed to stream
-SESSION_WORKERS: dict[str, asyncio.Task] = {}
-
-TEAMS: dict[str, dict] = {}
-SESSION_TO_TEAM: dict[str, dict] = {}  # session_id → {"team_id": str, "member_name": str}
-
-QUEUE_IDLE_TIMEOUT = 300  # 5 minutes
-
-
-def _get_or_create_auto(session_id: str, agent_id: str) -> Orchestrate:
-    if session_id not in ORCHESTRATORS:
-        model = "claude-sonnet-4-6"
-        if agent_id in AGENTS:
-            model = AGENTS[agent_id].get("model", {}).get("model", model)
-        elif agent_id in TEAMS:
-            model = TEAMS[agent_id].get("model", {}).get("model", model)
-        ORCHESTRATORS[session_id] = Orchestrate(model=model)
-    return ORCHESTRATORS[session_id]
+# Agent-keyed stores
+AGENT_SESSIONS: dict[str, str] = {}        # name → session_id (resume id from SDK)
+AGENT_QUEUES: dict[str, asyncio.Queue] = {}  # name → input Queue
+AGENT_SSE: dict[str, asyncio.Queue] = {}    # name → output Queue
+AGENT_WORKERS: dict[str, asyncio.Task] = {} # name → Task
 
 
 def _ensure_session(session_id: str, agent_id: str) -> dict:
@@ -88,45 +88,35 @@ def _ensure_session(session_id: str, agent_id: str) -> dict:
     return SESSIONS[session_id]
 
 
-def _emit(session_id: str, event: dict):
-    """Push event to the SSE output channel. Forward to team SSE if member."""
-    sse = SESSION_SSE.get(session_id)
+def _emit_agent(agent_name: str, event: dict):
+    """Push event to the agent's SSE output channel."""
+    sse = AGENT_SSE.get(agent_name)
     if sse:
         sse.put_nowait(json.dumps(event))
 
-    # Forward to team SSE with member_name tag
-    team_info = SESSION_TO_TEAM.get(session_id)
-    if team_info:
-        team_sse = SESSION_SSE.get(team_info["team_id"])
-        # Avoid double-emit if member SSE IS the team SSE
-        if team_sse and team_sse is not sse:
-            team_event = {**event, "member_name": team_info["member_name"]}
-            evt = team_event.get("event", "")
-            if evt and not evt.startswith("Team"):
-                team_event["event"] = "Team" + evt
-            team_sse.put_nowait(json.dumps(team_event))
 
-
-async def _process_message(message, source, agent_id, session_id, auto, run_id):
-    """Run an Agent SDK query. Appends events directly to SESSION_EVENTS."""
+async def _process_agent_message(message, source, agent_name, session_id, config, resume_id, run_id):
+    """Run an Agent SDK query for a specific agent. Returns (accumulated_text, resume_id)."""
     accumulated_text = ""
     tools_used = []
+    model = config.get("model", "claude-sonnet-4-6")
+    cwd = config.get("cwd", os.getcwd())
+    tools = config.get("tools", ALL_TOOLS)
 
     async for msg in query(
         prompt=message,
         options=ClaudeAgentOptions(
-            allowed_tools=[
-                "Read", "Edit", "Write", "Bash", "Glob", "Grep",
-                "Agent", "WebSearch", "WebFetch", "Skill",
-            ],
+            allowed_tools=tools,
             permission_mode="bypassPermissions",
-            model=auto._model,
+            model=model,
             effort="max",
-            resume=auto._sessions.get("self", {}).get("session_id"),
+            resume=resume_id,
             setting_sources=["user"],
+            cwd=cwd,
             env={
                 "ORCHESTRATE_API_URL": "http://localhost:7777",
                 "ORCHESTRATE_SESSION_ID": session_id,
+                "ORCHESTRATE_AGENT_NAME": agent_name,
             },
         ),
     ):
@@ -136,7 +126,7 @@ async def _process_message(message, source, agent_id, session_id, auto, run_id):
                     if accumulated_text and not accumulated_text[-1].isspace() and block.text and not block.text[0].isspace():
                         accumulated_text += " "
                     accumulated_text += block.text
-                    _emit(session_id, {
+                    _emit_agent(agent_name, {
                         "event": "RunContent",
                         "content": accumulated_text,
                         "content_type": "text/plain",
@@ -156,7 +146,7 @@ async def _process_message(message, source, agent_id, session_id, auto, run_id):
                         "created_at": int(time.time()),
                     }
                     tools_used.append(tool_record)
-                    _emit(session_id, {
+                    _emit_agent(agent_name, {
                         "event": "ToolCallStarted",
                         "tools": [tool_record],
                         "content_type": "text/plain",
@@ -165,9 +155,7 @@ async def _process_message(message, source, agent_id, session_id, auto, run_id):
                         "created_at": int(time.time()),
                     })
         elif isinstance(msg, ResultMessage):
-            if "self" not in auto._sessions:
-                auto.agent("self")
-            auto._sessions["self"]["session_id"] = msg.session_id
+            resume_id = msg.session_id
 
     # Store run
     RUNS.setdefault(session_id, []).append({
@@ -177,27 +165,31 @@ async def _process_message(message, source, agent_id, session_id, auto, run_id):
         "created_at": int(time.time()),
         "source": source,
     })
-    SESSIONS[session_id]["updated_at"] = int(time.time())
+    if session_id in SESSIONS:
+        SESSIONS[session_id]["updated_at"] = int(time.time())
 
-    return accumulated_text
+    return accumulated_text, resume_id
 
 
-async def _session_worker(session_id: str, agent_id: str):
-    """Background worker: pulls from queue, processes sequentially."""
-    queue = SESSION_QUEUES[session_id]
-    auto = _get_or_create_auto(session_id, agent_id)
+async def _agent_worker(agent_name: str):
+    """Background worker: pulls from agent's queue, processes sequentially."""
+    queue = AGENT_QUEUES[agent_name]
+    config = AGENTS.get(agent_name, {})
+    resume_id = None
+
     while True:
         item = await queue.get()
         if item.get("type") == "done":
-            continue  # program finished, but keep worker alive for follow-up messages
+            continue
 
         item_source = item["source"]
         item_message = item["message"]
         item_future = item.get("future")
         item_run_id = str(uuid.uuid4())
+        session_id = item.get("session_id", agent_name)
 
         # Tell UI this message left the queue
-        _emit(session_id, {
+        _emit_agent(agent_name, {
             "event": "MessageDequeued",
             "content": item_message,
             "source": item_source,
@@ -206,7 +198,7 @@ async def _session_worker(session_id: str, agent_id: str):
         })
 
         # Source marker — UI adds to main messages
-        _emit(session_id, {
+        _emit_agent(agent_name, {
             "event": "RunContent",
             "content": item_message,
             "content_type": "text/plain",
@@ -216,35 +208,24 @@ async def _session_worker(session_id: str, agent_id: str):
             "created_at": int(time.time()),
         })
 
-        # Process sequentially
-        response_text = await _process_message(
-            item_message, item_source, agent_id, session_id, auto, item_run_id
+        # Process sequentially, tracking resume_id locally
+        response_text, resume_id = await _process_agent_message(
+            item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
         )
 
         if item_future and not item_future.done():
             item_future.set_result(response_text)
 
-    _emit(session_id, {
-        "event": "RunCompleted",
-        "content": "",
-        "content_type": "text/plain",
-        "session_id": session_id,
-        "run_id": "",
-        "created_at": int(time.time()),
-    })
 
-    SESSION_WORKERS.pop(session_id, None)
-
-
-def _ensure_worker(session_id: str, agent_id: str):
-    """Start a background worker for this session if one isn't running."""
-    if session_id not in SESSION_WORKERS or SESSION_WORKERS[session_id].done():
-        if session_id not in SESSION_QUEUES:
-            SESSION_QUEUES[session_id] = asyncio.Queue()
-        if session_id not in SESSION_SSE:
-            SESSION_SSE[session_id] = asyncio.Queue()
-        SESSION_WORKERS[session_id] = asyncio.create_task(
-            _session_worker(session_id, agent_id)
+def _ensure_agent_worker(agent_name: str):
+    """Start a background worker for this agent if one isn't running."""
+    if agent_name not in AGENT_WORKERS or AGENT_WORKERS[agent_name].done():
+        if agent_name not in AGENT_QUEUES:
+            AGENT_QUEUES[agent_name] = asyncio.Queue()
+        if agent_name not in AGENT_SSE:
+            AGENT_SSE[agent_name] = asyncio.Queue()
+        AGENT_WORKERS[agent_name] = asyncio.create_task(
+            _agent_worker(agent_name)
         )
 
 
@@ -262,18 +243,145 @@ async def list_agents():
     return list(AGENTS.values())
 
 
-@app.get("/teams")
-async def list_teams():
-    return [
-        {
-            "id": t["id"],
-            "name": t.get("name", t["id"]),
-            "db_id": "default",
-            "model": t.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
-        }
-        for t in TEAMS.values()
-    ]
+@app.post("/agents")
+async def register_agent(request: Request):
+    data = await request.json()
+    agent_name = data.get("name", str(uuid.uuid4()))
+    AGENTS[agent_name] = {
+        "id": agent_name,
+        "name": agent_name,
+        "model": data.get("model", "claude-sonnet-4-6"),
+        "cwd": data.get("cwd", os.getcwd()),
+        "tools": data.get("tools", ALL_TOOLS),
+        "prompt": data.get("prompt", ""),
+    }
+    return AGENTS[agent_name]
 
+
+@app.post("/agents/{agent_name}/message")
+async def post_agent_message(
+    agent_name: str,
+    message: str = Form(...),
+    source: str = Form("user"),
+    session_id: str = Form(""),
+):
+    """Push a message to the agent's queue. Blocks until processed, returns response."""
+    if agent_name not in AGENTS:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+
+    _ensure_agent_worker(agent_name)
+
+    if not session_id:
+        session_id = agent_name
+
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+
+    _emit_agent(agent_name, {
+        "event": "MessageQueued",
+        "content": message,
+        "source": source,
+        "session_id": session_id,
+        "created_at": int(time.time()),
+    })
+
+    await AGENT_QUEUES[agent_name].put({
+        "message": message,
+        "source": source,
+        "future": future,
+        "session_id": session_id,
+    })
+
+    result = await future
+    return JSONResponse({"content": result, "status": "ok"})
+
+
+@app.get("/agents/{agent_name}/events")
+async def agent_events(agent_name: str):
+    """SSE stream reading from agent's SSE queue."""
+    if agent_name not in AGENTS:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+
+    _ensure_agent_worker(agent_name)
+
+    async def generate():
+        sse = AGENT_SSE.get(agent_name)
+        if not sse:
+            return
+        while True:
+            event_str = await sse.get()
+            yield event_str
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.delete("/agents/{agent_name}")
+async def delete_agent(agent_name: str):
+    """Cleanup agent resources."""
+    AGENTS.pop(agent_name, None)
+    AGENT_QUEUES.pop(agent_name, None)
+    AGENT_SSE.pop(agent_name, None)
+    AGENT_SESSIONS.pop(agent_name, None)
+    worker = AGENT_WORKERS.pop(agent_name, None)
+    if worker and not worker.done():
+        worker.cancel()
+    return {"status": "deleted"}
+
+
+@app.post("/agents/{agent_id}/runs")
+async def run_agent(
+    agent_id: str,
+    message: str = Form(...),
+    stream: str = Form("true"),
+    session_id: str = Form(""),
+    source: str = Form("user"),
+):
+    """UI entry point: create/resume a session and stream events."""
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    _ensure_session(session_id, agent_id)
+
+    # Use first message as session name (truncated)
+    if SESSIONS[session_id].get("session_name", "").startswith("Session "):
+        SESSIONS[session_id]["session_name"] = message[:40] + " " + time.strftime("%H:%M")
+
+    run_id = str(uuid.uuid4())
+    now = int(time.time())
+
+    # Ensure worker is running for this agent
+    _ensure_agent_worker(agent_id)
+
+    # Push the initial message to the agent's queue
+    await AGENT_QUEUES[agent_id].put({
+        "message": message,
+        "source": source,
+        "session_id": session_id,
+    })
+
+    async def generate():
+        yield json.dumps({
+            "event": "RunStarted",
+            "session_id": session_id,
+            "run_id": run_id,
+            "agent_id": agent_id,
+            "content_type": "text/plain",
+            "created_at": now,
+        })
+
+        sse = AGENT_SSE.get(agent_id)
+        if not sse:
+            return
+
+        while True:
+            event_str = await sse.get()
+            yield event_str
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Session endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/sessions")
 async def list_sessions(
@@ -281,16 +389,10 @@ async def list_sessions(
     component_id: str = Query(""),
     db_id: str = Query(""),
 ):
-    if type == "team" and component_id:
-        # Return sessions for team members
-        team = TEAMS.get(component_id, {})
-        member_session_ids = {m["session_id"] for m in team.get("members", {}).values()}
-        sessions = [s for s in SESSIONS.values() if s["session_id"] in member_session_ids]
-    else:
-        sessions = [
-            s for s in SESSIONS.values()
-            if not component_id or s.get("agent_id") == component_id
-        ]
+    sessions = [
+        s for s in SESSIONS.values()
+        if not component_id or s.get("agent_id") == component_id
+    ]
     sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
     return {"data": sessions}
 
@@ -308,36 +410,11 @@ async def get_session_runs(
 async def delete_session(session_id: str, db_id: str = Query("")):
     SESSIONS.pop(session_id, None)
     RUNS.pop(session_id, None)
-    ORCHESTRATORS.pop(session_id, None)
-    SESSION_QUEUES.pop(session_id, None)
-    SESSION_SSE.pop(session_id, None)
-    SESSION_TO_TEAM.pop(session_id, None)
-    worker = SESSION_WORKERS.pop(session_id, None)
-    if worker and not worker.done():
-        worker.cancel()
-
-    # Clean up team if this session owns a team, cascading to all member sessions
-    team = TEAMS.pop(session_id, None)
-    if team:
-        for member in team.get("members", {}).values():
-            member_sid = member.get("session_id", "")
-            if not member_sid:
-                continue
-            SESSION_TO_TEAM.pop(member_sid, None)
-            SESSIONS.pop(member_sid, None)
-            RUNS.pop(member_sid, None)
-            ORCHESTRATORS.pop(member_sid, None)
-            SESSION_QUEUES.pop(member_sid, None)
-            SESSION_SSE.pop(member_sid, None)
-            member_worker = SESSION_WORKERS.pop(member_sid, None)
-            if member_worker and not member_worker.done():
-                member_worker.cancel()
-
     return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
-# Queue-based message endpoint
+# Backwards-compat: route session message to owning agent
 # ---------------------------------------------------------------------------
 
 @app.post("/sessions/{session_id}/message")
@@ -346,26 +423,34 @@ async def post_message(
     message: str = Form(...),
     source: str = Form("user"),
 ):
-    """Push a message to the session queue. Blocks until processed, returns response."""
-    if session_id not in SESSION_QUEUES:
-        return JSONResponse({"error": "no active stream for session"}, status_code=400)
+    """Backwards-compat: route to the agent that owns this session."""
+    # Find the agent that owns this session
+    agent_name = None
+    session = SESSIONS.get(session_id)
+    if session:
+        agent_name = session.get("agent_id")
+
+    if not agent_name or agent_name not in AGENTS:
+        return JSONResponse({"error": "no agent found for session"}, status_code=400)
+
+    _ensure_agent_worker(agent_name)
 
     loop = asyncio.get_event_loop()
     future = loop.create_future()
 
-    await SESSION_QUEUES[session_id].put({
-        "message": message,
-        "source": source,
-        "future": future,
-    })
-
-    # Emit queued event so UI shows the message immediately
-    _emit(session_id, {
+    _emit_agent(agent_name, {
         "event": "MessageQueued",
         "content": message,
         "source": source,
         "session_id": session_id,
         "created_at": int(time.time()),
+    })
+
+    await AGENT_QUEUES[agent_name].put({
+        "message": message,
+        "source": source,
+        "future": future,
+        "session_id": session_id,
     })
 
     result = await future
@@ -375,166 +460,9 @@ async def post_message(
 @app.post("/sessions/{session_id}/program-done")
 async def program_done(session_id: str):
     """Signal that the orchestrate program has finished."""
-    if session_id in SESSION_QUEUES:
-        await SESSION_QUEUES[session_id].put({"type": "done"})
+    session = SESSIONS.get(session_id)
+    if session:
+        agent_name = session.get("agent_id")
+        if agent_name and agent_name in AGENT_QUEUES:
+            await AGENT_QUEUES[agent_name].put({"type": "done"})
     return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# Stream endpoint — just reads from the event log
-# ---------------------------------------------------------------------------
-
-@app.post("/agents/{agent_id}/runs")
-async def run_agent(
-    agent_id: str,
-    message: str = Form(...),
-    stream: str = Form("true"),
-    session_id: str = Form(""),
-    source: str = Form("user"),
-):
-    if not session_id:
-        session_id = str(uuid.uuid4())
-    _ensure_session(session_id, agent_id)
-
-    # Use first message as session name (truncated)
-    if SESSIONS[session_id].get("session_name", "").startswith("Session "):
-        SESSIONS[session_id]["session_name"] = message[:40] + " " + time.strftime("%H:%M")
-
-    run_id = str(uuid.uuid4())
-    now = int(time.time())
-
-    # Ensure background worker is running
-    _ensure_worker(session_id, agent_id)
-
-    # Push the initial message to the queue (same as any other message)
-    await SESSION_QUEUES[session_id].put({
-        "message": message,
-        "source": source,
-    })
-
-    async def generate():
-        # RunStarted
-        yield json.dumps({
-            "event": "RunStarted",
-            "session_id": session_id,
-            "run_id": run_id,
-            "agent_id": agent_id,
-            "content_type": "text/plain",
-            "created_at": now,
-        })
-
-        # Read events pushed by the worker
-        sse = SESSION_SSE.get(session_id)
-        if not sse:
-            return
-
-        while True:
-            event_str = await sse.get()
-            yield event_str
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
-
-
-# ---------------------------------------------------------------------------
-# Dynamic agent registration
-# ---------------------------------------------------------------------------
-
-@app.post("/agents")
-async def register_agent(request: Request):
-    data = await request.json()
-    agent_id = data.get("id", str(uuid.uuid4()))
-    AGENTS[agent_id] = {
-        "id": agent_id,
-        "name": data.get("name", agent_id),
-        "db_id": data.get("db_id", "default"),
-        "model": data.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
-    }
-    return AGENTS[agent_id]
-
-
-@app.post("/teams")
-async def register_team(request: Request):
-    data = await request.json()
-    team_id = data.get("id", str(uuid.uuid4()))
-    session_id = data.get("session_id")  # the program's self session
-    TEAMS[team_id] = {
-        "id": team_id,
-        "name": data.get("name", team_id),
-        "model": data.get("model", {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"}),
-        "members": {},
-    }
-    # Create team SSE channel
-    SESSION_SSE[team_id] = asyncio.Queue()
-    # Map self session → team so its events also go to team SSE
-    if session_id:
-        SESSION_TO_TEAM[session_id] = {"team_id": team_id, "member_name": "self"}
-    return TEAMS[team_id]
-
-
-@app.post("/teams/{team_id}/members")
-async def register_team_member(team_id: str, request: Request):
-    data = await request.json()
-    member_name = data["name"]
-    member_session_id = str(uuid.uuid4())
-
-    # Create session infrastructure for this member
-    _ensure_session(member_session_id, team_id)
-    SESSIONS[member_session_id]["session_name"] = member_name
-    SESSION_QUEUES[member_session_id] = asyncio.Queue()
-    # Do NOT create a per-member SSE queue — members have no direct SSE consumer.
-    # _emit will forward events to the team SSE queue via SESSION_TO_TEAM routing.
-    # (Leaving SESSION_SSE[member_session_id] unset means sse=None in _emit,
-    #  so the forwarding guard `team_sse is not sse` is always True.)
-
-    # Start worker for this member
-    SESSION_WORKERS[member_session_id] = asyncio.create_task(
-        _session_worker(member_session_id, team_id)
-    )
-
-    # Map member session → team
-    SESSION_TO_TEAM[member_session_id] = {"team_id": team_id, "member_name": member_name}
-
-    # Store in team
-    TEAMS[team_id]["members"][member_name] = {
-        "name": member_name,
-        "session_id": member_session_id,
-    }
-
-    return {"session_id": member_session_id, "name": member_name}
-
-
-@app.post("/teams/{team_id}/runs")
-async def run_team(
-    team_id: str,
-    message: str = Form(""),
-    stream: str = Form("true"),
-    session_id: str = Form(""),
-):
-    if team_id not in TEAMS:
-        return JSONResponse({"error": "team not found"}, status_code=404)
-
-    if not session_id:
-        session_id = str(uuid.uuid4())
-
-    run_id = str(uuid.uuid4())
-    now = int(time.time())
-
-    async def generate():
-        yield json.dumps({
-            "event": "TeamRunStarted",
-            "session_id": session_id,
-            "run_id": run_id,
-            "team_id": team_id,
-            "content_type": "text/plain",
-            "created_at": now,
-        })
-
-        sse = SESSION_SSE.get(team_id)
-        if not sse:
-            return
-
-        while True:
-            event_str = await sse.get()
-            yield event_str
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
