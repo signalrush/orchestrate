@@ -217,9 +217,8 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.TeamRunContent
             ) {
               // Handle source-tagged events: create bubble + agent bubble
-              const chunkSource = (chunk as any).source
-              if (chunkSource === 'remind' || chunkSource === 'user' || chunkSource === 'run') {
-                const role = chunkSource === 'user' ? 'user' : 'remind'
+              if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
+                const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
                 setMessages((prevMessages) => {
                   const newMessages = [...prevMessages]
                   newMessages.push({

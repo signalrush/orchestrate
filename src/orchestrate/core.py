@@ -91,7 +91,7 @@ class Orchestrate:
                 prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
                            f"Keys and types:\n{schema_desc}")
 
-            result = self._post_form(f"/agents/{to}/message", {"message": prompt, "source": "run"})
+            result = self._post_form(f"/agents/{to}/message", {"message": prompt, "source": "remind"})
             result_text = result.get("content", "") if isinstance(result, dict) else str(result)
 
             print(f"[{to}] {result_text[:200]}", flush=True)
