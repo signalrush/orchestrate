@@ -304,7 +304,7 @@ async def post_agent_message(
     _ensure_agent_worker(agent_name)
 
     if not session_id:
-        session_id = agent_name
+        session_id = AGENTS[agent_name].get("session_id", agent_name)
 
     loop = asyncio.get_running_loop()
     future = loop.create_future()
@@ -321,6 +321,7 @@ async def post_agent_message(
         "message": message,
         "source": source,
         "future": future,
+        "session_id": session_id,
         "session_id": session_id,
     })
 
