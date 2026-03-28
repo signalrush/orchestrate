@@ -60,6 +60,47 @@ def _parse_json(text: str) -> dict:
     raise ValueError(f"No valid JSON found in response: {text[:200]}")
 
 
+_TYPE_MAP = {
+    "str": str,
+    "string": str,
+    "int": int,
+    "integer": int,
+    "float": (int, float),
+    "number": (int, float),
+    "bool": bool,
+    "boolean": bool,
+    "list": list,
+    "array": list,
+    "dict": dict,
+    "object": dict,
+}
+
+
+def _validate_schema(data: dict, schema: dict) -> None:
+    """Validate that data has all schema keys with correct types.
+
+    Schema format: {"key": "type_name"} where type_name is one of:
+    str, int, float, bool, list, dict (or aliases like string, number, etc.)
+    Types containing "|" (e.g., "str | null") accept None as valid.
+    """
+    errors = []
+    for key, type_spec in schema.items():
+        if key not in data:
+            errors.append(f"missing key '{key}'")
+            continue
+        value = data[key]
+        # Handle nullable types like "str | null"
+        if "|" in str(type_spec):
+            if value is None:
+                continue
+            type_spec = type_spec.split("|")[0].strip()
+        expected = _TYPE_MAP.get(type_spec.strip().lower())
+        if expected and not isinstance(value, expected):
+            errors.append(f"'{key}' expected {type_spec}, got {type(value).__name__}")
+    if errors:
+        raise ValueError(f"Schema validation failed: {', '.join(errors)}")
+
+
 class Orchestrate:
     """Pure HTTP client for the orchestrate API.
 
@@ -127,10 +168,7 @@ class Orchestrate:
 
             try:
                 parsed = _parse_json(result_text)
-                # Validate schema keys exist
-                missing = [k for k in schema if k not in parsed]
-                if missing:
-                    raise ValueError(f"Missing keys in response: {missing}")
+                _validate_schema(parsed, schema)
                 return parsed
             except ValueError as e:
                 last_error = e
