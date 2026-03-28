@@ -31,7 +31,7 @@ app = FastAPI(title="orchestrate API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -170,48 +170,58 @@ async def _agent_worker(agent_name: str):
     config = AGENTS.get(agent_name, {})
     resume_id = None
 
-    while True:
-        item = await queue.get()
-        if item.get("type") == "done":
-            continue
+    try:
+        while True:
+            item = await queue.get()
+            if item.get("type") == "done":
+                continue
 
-        item_source = item["source"]
-        item_message = item["message"]
-        item_future = item.get("future")
-        item_run_id = str(uuid.uuid4())
-        session_id = item.get("session_id", agent_name)
+            item_source = item["source"]
+            item_message = item["message"]
+            item_future = item.get("future")
+            item_run_id = str(uuid.uuid4())
+            session_id = item.get("session_id", agent_name)
 
-        # Tell UI this message left the queue
-        _emit_agent(agent_name, {
-            "event": "MessageDequeued",
-            "content": item_message,
-            "source": item_source,
-            "session_id": session_id,
-            "created_at": int(time.time()),
-        })
+            # Tell UI this message left the queue
+            _emit_agent(agent_name, {
+                "event": "MessageDequeued",
+                "content": item_message,
+                "source": item_source,
+                "session_id": session_id,
+                "created_at": int(time.time()),
+            })
 
-        # Source marker — UI adds to main messages
-        _emit_agent(agent_name, {
-            "event": "RunContent",
-            "content": item_message,
-            "content_type": "text/plain",
-            "source": item_source,
-            "session_id": session_id,
-            "run_id": item_run_id,
-            "created_at": int(time.time()),
-        })
+            # Source marker — UI adds to main messages
+            _emit_agent(agent_name, {
+                "event": "RunContent",
+                "content": item_message,
+                "content_type": "text/plain",
+                "source": item_source,
+                "session_id": session_id,
+                "run_id": item_run_id,
+                "created_at": int(time.time()),
+            })
 
-        # Process sequentially, tracking resume_id locally
-        try:
-            response_text, new_resume_id = await _process_agent_message(
-                item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
-            )
-            resume_id = new_resume_id
-            if item_future and not item_future.done():
-                item_future.set_result(response_text)
-        except Exception as e:
-            if item_future and not item_future.done():
-                item_future.set_exception(e)
+            # Process sequentially, tracking resume_id locally
+            try:
+                response_text, new_resume_id = await _process_agent_message(
+                    item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
+                )
+                resume_id = new_resume_id
+                if item_future and not item_future.done():
+                    item_future.set_result(response_text)
+            except Exception as e:
+                _emit_agent(agent_name, {
+                    "event": "RunError",
+                    "content": str(e),
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                    "created_at": int(time.time()),
+                })
+                if item_future and not item_future.done():
+                    item_future.set_exception(e)
+    except asyncio.CancelledError:
+        return
 
 
 def _ensure_agent_worker(agent_name: str):
@@ -328,20 +338,20 @@ async def delete_agent(agent_name: str):
     return {"status": "deleted"}
 
 
-@app.post("/agents/{agent_id}/runs")
+@app.post("/agents/{agent_name}/runs")
 async def run_agent(
-    agent_id: str,
+    agent_name: str,
     message: str = Form(...),
     stream: str = Form("true"),
     session_id: str = Form(""),
     source: str = Form("user"),
 ):
     """UI entry point: create/resume a session and stream events."""
-    if agent_id not in AGENTS:
+    if agent_name not in AGENTS:
         return JSONResponse({"error": "agent not found"}, status_code=404)
     if not session_id:
         session_id = str(uuid.uuid4())
-    _ensure_session(session_id, agent_id)
+    _ensure_session(session_id, agent_name)
 
     # Use first message as session name (truncated)
     if SESSIONS[session_id].get("session_name", "").startswith("Session "):
@@ -351,10 +361,10 @@ async def run_agent(
     now = int(time.time())
 
     # Ensure worker is running for this agent
-    _ensure_agent_worker(agent_id)
+    _ensure_agent_worker(agent_name)
 
     # Push the initial message to the agent's queue
-    await AGENT_QUEUES[agent_id].put({
+    await AGENT_QUEUES[agent_name].put({
         "message": message,
         "source": source,
         "session_id": session_id,
@@ -365,12 +375,12 @@ async def run_agent(
             "event": "RunStarted",
             "session_id": session_id,
             "run_id": run_id,
-            "agent_id": agent_id,
+            "agent_name": agent_name,
             "content_type": "text/plain",
             "created_at": now,
         })
 
-        sse = AGENT_SSE.get(agent_id)
+        sse = AGENT_SSE.get(agent_name)
         if not sse:
             return
 
@@ -387,9 +397,8 @@ async def run_agent(
 
 @app.get("/sessions")
 async def list_sessions(
-    type: str = Query("agent"),
+    session_type: str = Query("agent"),
     component_id: str = Query(""),
-    db_id: str = Query(""),
 ):
     sessions = [
         s for s in SESSIONS.values()
@@ -402,14 +411,13 @@ async def list_sessions(
 @app.get("/sessions/{session_id}/runs")
 async def get_session_runs(
     session_id: str,
-    type: str = Query("agent"),
-    db_id: str = Query(""),
+    session_type: str = Query("agent"),
 ):
     return RUNS.get(session_id, [])
 
 
 @app.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, db_id: str = Query("")):
+async def delete_session(session_id: str):
     SESSIONS.pop(session_id, None)
     RUNS.pop(session_id, None)
     return {"status": "deleted"}
@@ -457,14 +465,3 @@ async def post_message(
 
     result = await future
     return JSONResponse({"content": result, "status": "ok"})
-
-
-@app.post("/sessions/{session_id}/program-done")
-async def program_done(session_id: str):
-    """Signal that the orchestrate program has finished."""
-    session = SESSIONS.get(session_id)
-    if session:
-        agent_name = session.get("agent_id")
-        if agent_name and agent_name in AGENT_QUEUES:
-            await AGENT_QUEUES[agent_name].put({"type": "done"})
-    return {"status": "ok"}

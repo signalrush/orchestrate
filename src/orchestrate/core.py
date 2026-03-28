@@ -87,6 +87,12 @@ class Orchestrate:
         resp = await self._client.post("/agents", json=config)
         resp.raise_for_status()
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.aclose()
+
     async def aclose(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()
