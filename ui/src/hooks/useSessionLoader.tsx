@@ -40,7 +40,7 @@ const useSessionLoader = () => {
   const getSessions = useCallback(
     async ({ entityType, agentId, teamId, dbId }: LoaderArgs) => {
       const selectedId = entityType === 'agent' ? agentId : teamId
-      if (!selectedEndpoint || !entityType || !selectedId || !dbId) return
+      if (!selectedEndpoint || !entityType || !selectedId) return
 
       try {
         setIsSessionsLoading(true)
@@ -81,8 +81,7 @@ const useSessionLoader = () => {
         !selectedEndpoint ||
         !sessionId ||
         !entityType ||
-        !selectedId ||
-        !dbId
+        !selectedId
       )
         return
 
