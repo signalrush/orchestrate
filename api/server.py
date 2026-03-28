@@ -53,6 +53,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+ALL_TOOLS = ["Read", "Edit", "Write", "Bash", "Glob", "Grep", "Agent", "WebSearch", "WebFetch", "Skill"]
+
+
 @app.on_event("startup")
 async def load_persisted_agents():
     conn = _db()
@@ -79,28 +82,31 @@ async def load_persisted_agents():
                 SESSIONS[sid]["updated_at"] = ts["last"] or 0
     conn.close()
 
+    # Register default orchestrator agent if not loaded from DB
+    if "orchestrator" not in AGENTS:
+        AGENTS["orchestrator"] = {
+            "id": "orchestrator",
+            "name": "orchestrator",
+            "model": "claude-opus-4-6",
+            "cwd": os.getcwd(),
+            "tools": ALL_TOOLS,
+            "prompt": "",
+        }
+        conn = _db()
+        conn.execute("INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
+                     ("orchestrator", None, json.dumps(AGENTS["orchestrator"])))
+        conn.commit()
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-ALL_TOOLS = ["Read", "Edit", "Write", "Bash", "Glob", "Grep", "Agent", "WebSearch", "WebFetch", "Skill"]
 
 # ---------------------------------------------------------------------------
 # In-memory stores
 # ---------------------------------------------------------------------------
 
-AGENTS: dict[str, dict] = {
-    "orchestrator": {
-        "id": "orchestrator",
-        "name": "orchestrator",
-        "model": "claude-opus-4-6",
-        "cwd": os.getcwd(),
-        "tools": ALL_TOOLS,
-        "prompt": "",
-    },
-    # "self" is aliased to "orchestrator" in post_agent_message
-}
+AGENTS: dict[str, dict] = {}
+# "self" is aliased to "orchestrator" in post_agent_message
 
 SESSIONS: dict[str, dict] = {}
 RUNS: dict[str, list] = {}
@@ -257,7 +263,8 @@ async def _agent_worker(agent_name: str):
                 )
                 resume_id = new_resume_id
                 conn = _db()
-                conn.execute("UPDATE agents SET resume_id = ? WHERE name = ?", (resume_id, agent_name))
+                conn.execute("INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
+                             (agent_name, resume_id, json.dumps(config)))
                 conn.commit()
                 conn.close()
                 if item_future and not item_future.done():
