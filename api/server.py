@@ -179,7 +179,7 @@ async def _agent_worker(agent_name: str):
             item_message = item["message"]
             item_future = item.get("future")
             item_run_id = str(uuid.uuid4())
-            session_id = item.get("session_id", agent_name)
+            session_id = item.get("session_id") or config.get("session_id", agent_name)
 
             # Tell UI this message left the queue
             _emit_agent(agent_name, {
@@ -241,11 +241,13 @@ def _ensure_agent_worker(agent_name: str):
             AGENT_QUEUES[agent_name] = asyncio.Queue()
         if agent_name not in AGENT_SSE:
             AGENT_SSE[agent_name] = asyncio.Queue()
-        # Create session visible in sidebar (agent_id="orchestrator" so sidebar filter includes it)
-        session_id = agent_name
-        if session_id not in SESSIONS:
-            _ensure_session(session_id, "orchestrator")
-            SESSIONS[session_id]["session_name"] = agent_name
+        # Create session with UUID (if agent doesn't have one yet)
+        if "session_id" not in AGENTS.get(agent_name, {}):
+            sid = str(uuid.uuid4())
+            _ensure_session(sid, "orchestrator")
+            SESSIONS[sid]["session_name"] = agent_name
+            if agent_name in AGENTS:
+                AGENTS[agent_name]["session_id"] = sid
         AGENT_WORKERS[agent_name] = asyncio.create_task(
             _agent_worker(agent_name)
         )
@@ -364,8 +366,10 @@ async def run_agent(
     if agent_name not in AGENTS:
         return JSONResponse({"error": "agent not found"}, status_code=404)
     if not session_id:
-        session_id = str(uuid.uuid4())
+        # Reuse agent's existing session if it has one
+        session_id = AGENTS[agent_name].get("session_id") or str(uuid.uuid4())
     _ensure_session(session_id, agent_name)
+    AGENTS[agent_name]["session_id"] = session_id
 
     # Use first message as session name (truncated)
     if SESSIONS[session_id].get("session_name", "").startswith("Session "):
