@@ -26,23 +26,19 @@ export default function useTeamStream() {
           if (done) break
           buffer += decoder.decode(value, { stream: true })
 
-          // Extract complete JSON objects
-          let startIdx = buffer.indexOf('{')
-          while (startIdx >= 0) {
-            let depth = 0, endIdx = -1
-            for (let i = startIdx; i < buffer.length; i++) {
-              if (buffer[i] === '{') depth++
-              else if (buffer[i] === '}') { depth--; if (depth === 0) { endIdx = i; break } }
-            }
-            if (endIdx === -1) break
+          // Process complete lines (NDJSON)
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''  // keep incomplete last line
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
             try {
-              const event = JSON.parse(buffer.slice(startIdx, endIdx + 1))
+              const event = JSON.parse(trimmed)
               window.dispatchEvent(new CustomEvent('team-sse-event', { detail: event }))
             } catch {}
-            buffer = buffer.slice(endIdx + 1)
-            startIdx = buffer.indexOf('{')
           }
         }
+        if (!cancelled) setTimeout(connect, 3000)
       } catch {
         if (!cancelled) setTimeout(connect, 3000)
       }

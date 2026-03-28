@@ -1,32 +1,19 @@
 import { useCallback, useEffect } from 'react'
 
-import { APIRoutes } from '@/api/routes'
-
-import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '../store'
 import { RunEvent, RunResponseContent, type RunResponse } from '@/types/os'
-import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
-import useAIResponseStream from './useAIResponseStream'
 import { ToolCall } from '@/types/os'
 import { useQueryState } from 'nuqs'
 import { getJsonMarkdown } from '@/lib/utils'
 
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
-  const { focusChatInput } = useChatActions()
-  const [agentId] = useQueryState('agent')
-  const [teamId] = useQueryState('team')
   const [sessionId, setSessionId] = useQueryState('session')
-  const selectedEndpoint = useStore((state) => state.selectedEndpoint)
-  const authToken = useStore((state) => state.authToken)
-  const mode = useStore((state) => state.mode)
   const setStreamingErrorMessage = useStore(
     (state) => state.setStreamingErrorMessage
   )
-  const setIsStreaming = useStore((state) => state.setIsStreaming)
   const setPendingQueue = useStore((state) => state.setPendingQueue)
   const setSessionsData = useStore((state) => state.setSessionsData)
-  const { streamResponse } = useAIResponseStream()
 
   const updateMessagesWithErrorState = useCallback(() => {
     setMessages((prevMessages) => {
@@ -395,107 +382,7 @@ const useAIChatStreamHandler = () => {
     return () => window.removeEventListener('team-sse-event', handler)
   }, [processChunk, sessionId])
 
-  const handleStreamResponse = useCallback(
-    async (input: string | FormData) => {
-      setIsStreaming(true)
-
-      const formData = input instanceof FormData ? input : new FormData()
-      if (typeof input === 'string') {
-        formData.append('message', input)
-      }
-
-      // Don't create local bubbles — server source markers handle all bubble creation
-
-      let lastContent = ''
-      let newSessionId = sessionId
-      try {
-        const endpointUrl = constructEndpointUrl(selectedEndpoint)
-
-        let RunUrl: string | null = null
-
-        if (mode === 'team' && teamId) {
-          RunUrl = APIRoutes.TeamRun(endpointUrl, teamId)
-        } else if (mode === 'agent' && agentId) {
-          RunUrl = APIRoutes.AgentRun(endpointUrl).replace(
-            '{agent_id}',
-            agentId
-          )
-        }
-
-        if (!RunUrl) {
-          updateMessagesWithErrorState()
-          setStreamingErrorMessage('Please select an agent or team first.')
-          setIsStreaming(false)
-          return
-        }
-
-        formData.append('stream', 'true')
-        formData.append('session_id', sessionId ?? '')
-
-        // Create headers with auth token if available
-        const headers: Record<string, string> = {}
-        if (authToken) {
-          headers['Authorization'] = `Bearer ${authToken}`
-        }
-
-        await streamResponse({
-          apiUrl: RunUrl,
-          headers,
-          requestBody: formData,
-          onChunk: (chunk: RunResponse) => {
-            processChunk(chunk)
-          },
-          onError: (error) => {
-            updateMessagesWithErrorState()
-            setStreamingErrorMessage(error.message)
-            if (newSessionId) {
-              setSessionsData(
-                (prevSessionsData) =>
-                  prevSessionsData?.filter(
-                    (session) => session.session_id !== newSessionId
-                  ) ?? null
-              )
-            }
-          },
-          onComplete: () => {}
-        })
-      } catch (error) {
-        updateMessagesWithErrorState()
-        setStreamingErrorMessage(
-          error instanceof Error ? error.message : String(error)
-        )
-        if (newSessionId) {
-          setSessionsData(
-            (prevSessionsData) =>
-              prevSessionsData?.filter(
-                (session) => session.session_id !== newSessionId
-              ) ?? null
-          )
-        }
-      } finally {
-        focusChatInput()
-        setIsStreaming(false)
-      }
-    },
-    [
-      updateMessagesWithErrorState,
-      selectedEndpoint,
-      authToken,
-      streamResponse,
-      agentId,
-      teamId,
-      mode,
-      setStreamingErrorMessage,
-      setIsStreaming,
-      focusChatInput,
-      setSessionsData,
-      sessionId,
-      setSessionId,
-      processChunk
-    ]
-  )
-
-  return { handleStreamResponse }
+  return {}
 }
 
 export default useAIChatStreamHandler
