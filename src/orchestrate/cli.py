@@ -93,6 +93,8 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
 
     try:
         spec = importlib.util.spec_from_file_location("_user_program", file_path)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Cannot load program: {file_path}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
@@ -127,7 +129,7 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
 def cmd_run(file_path: str) -> str:
     """Launch file_path as a background process. Returns run ID."""
     abs_path = str(Path(file_path).resolve())
-    run_id = uuid.uuid4().hex[:4]
+    run_id = uuid.uuid4().hex[:8]
 
     run_dir = _run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)

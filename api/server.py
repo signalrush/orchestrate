@@ -13,13 +13,13 @@ from fastapi import FastAPI, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from orchestrate.core import _parse_json
 
 # Load OAuth token if available
 try:
     creds_path = os.path.expanduser("~/.claude/.credentials.json")
     if os.path.exists(creds_path) and not os.environ.get("ANTHROPIC_API_KEY"):
-        creds = json.load(open(creds_path))
+        with open(creds_path) as f:
+            creds = json.load(f)
         os.environ["ANTHROPIC_API_KEY"] = creds["claudeAiOauth"]["accessToken"]
 except Exception:
     pass
@@ -202,12 +202,16 @@ async def _agent_worker(agent_name: str):
         })
 
         # Process sequentially, tracking resume_id locally
-        response_text, resume_id = await _process_agent_message(
-            item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
-        )
-
-        if item_future and not item_future.done():
-            item_future.set_result(response_text)
+        try:
+            response_text, new_resume_id = await _process_agent_message(
+                item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
+            )
+            resume_id = new_resume_id
+            if item_future and not item_future.done():
+                item_future.set_result(response_text)
+        except Exception as e:
+            if item_future and not item_future.done():
+                item_future.set_exception(e)
 
 
 def _ensure_agent_worker(agent_name: str):
@@ -270,7 +274,7 @@ async def post_agent_message(
     if not session_id:
         session_id = agent_name
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     future = loop.create_future()
 
     _emit_agent(agent_name, {
@@ -333,6 +337,8 @@ async def run_agent(
     source: str = Form("user"),
 ):
     """UI entry point: create/resume a session and stream events."""
+    if agent_id not in AGENTS:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
     if not session_id:
         session_id = str(uuid.uuid4())
     _ensure_session(session_id, agent_id)
@@ -431,7 +437,7 @@ async def post_message(
 
     _ensure_agent_worker(agent_name)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     future = loop.create_future()
 
     _emit_agent(agent_name, {

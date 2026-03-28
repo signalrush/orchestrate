@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
-api = ["fastapi", "uvicorn[standard]", "python-multipart"]
+api = ["claude-agent-sdk", "fastapi", "uvicorn[standard]", "python-multipart"]
 
 [project.scripts]
 orchestrate-run = "orchestrate.cli:main"
