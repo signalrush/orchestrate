@@ -79,9 +79,7 @@ class _LazyOrchestrate:
         if self._real is None:
             from orchestrate.core import Orchestrate
             api_url = os.environ.get("ORCHESTRATE_API_URL")
-            session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
-            program_name = os.environ.get("ORCHESTRATE_PROGRAM_NAME")
-            self._real = Orchestrate(api_url=api_url, session_id=session_id, program_name=program_name)
+            self._real = Orchestrate(api_url=api_url)
         return self._real
 
     def __getattr__(self, name: str):
@@ -120,20 +118,6 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
         data["error"] = str(exc)
     finally:
         (run_dir / "run.json").write_text(json.dumps(data))
-        # Signal the API that the program is done
-        api_url = os.environ.get("ORCHESTRATE_API_URL")
-        session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
-        if api_url and session_id:
-            try:
-                import urllib.request
-                req = urllib.request.Request(
-                    f"{api_url}/sessions/{session_id}/program-done",
-                    method="POST",
-                    data=b"",
-                )
-                urllib.request.urlopen(req, timeout=5)
-            except Exception:
-                pass
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +144,7 @@ def cmd_run(file_path: str) -> str:
 
     log_fd = open(log_path, "w")
     import os as _os
-    env = {**_os.environ, "ORCHESTRATE_PROGRAM_NAME": Path(abs_path).stem}
+    env = {**_os.environ, "ORCHESTRATE_API_URL": _os.environ.get("ORCHESTRATE_API_URL", "http://localhost:7777")}
     proc = __import__("subprocess").Popen(
         [sys.executable, __file__, "_exec", abs_path, run_id, str(run_dir)],
         stdout=log_fd,
