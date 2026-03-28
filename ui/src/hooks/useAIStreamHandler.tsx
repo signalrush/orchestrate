@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import { APIRoutes } from '@/api/routes'
 
@@ -100,6 +100,301 @@ const useAIChatStreamHandler = () => {
     [processToolCall]
   )
 
+  const processChunk = useCallback(
+    (chunk: RunResponse) => {
+      if (
+        chunk.event === RunEvent.RunStarted ||
+        chunk.event === RunEvent.TeamRunStarted ||
+        chunk.event === RunEvent.ReasoningStarted ||
+        chunk.event === RunEvent.TeamReasoningStarted
+      ) {
+        setSessionId(chunk.session_id as string)
+        if (
+          (!sessionId || sessionId !== chunk.session_id) &&
+          chunk.session_id
+        ) {
+          const sessionData = {
+            session_id: chunk.session_id as string,
+            session_name: '', // Will be populated by the server
+            created_at: chunk.created_at
+          }
+          setSessionsData((prevSessionsData) => {
+            const sessionExists = prevSessionsData?.some(
+              (session) => session.session_id === chunk.session_id
+            )
+            if (sessionExists) {
+              return prevSessionsData
+            }
+            return [sessionData, ...(prevSessionsData ?? [])]
+          })
+        }
+      } else if (
+        (chunk.event as string) === 'AgentRegistered'
+      ) {
+        // New agent created — refresh session list
+        setSessionsData((prev) => prev)
+        window.dispatchEvent(new Event('sessions-refresh'))
+      } else if (
+        (chunk.event as string) === 'MessageQueued'
+      ) {
+        // Server says a message entered the queue — add to pending display
+        setPendingQueue((prev) => [...prev, {
+          content: typeof chunk.content === 'string' ? chunk.content : '',
+          source: (chunk as any).source || 'user',
+          created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+        }])
+      } else if (
+        (chunk.event as string) === 'MessageDequeued'
+      ) {
+        // Server says a message left the queue — remove from pending display
+        const content = typeof chunk.content === 'string' ? chunk.content : ''
+        const source = (chunk as any).source || 'user'
+        setPendingQueue((prev) => {
+          const idx = prev.findIndex((p) => p.content === content && p.source === source)
+          if (idx >= 0) return [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+          return prev
+        })
+      } else if (
+        chunk.event === RunEvent.ToolCallStarted ||
+        chunk.event === RunEvent.TeamToolCallStarted ||
+        chunk.event === RunEvent.ToolCallCompleted ||
+        chunk.event === RunEvent.TeamToolCallCompleted
+      ) {
+        setMessages((prevMessages) => {
+          const newMessages = [...prevMessages]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.role === 'agent') {
+            lastMessage.tool_calls = processChunkToolCalls(
+              chunk,
+              lastMessage.tool_calls
+            )
+          }
+          return newMessages
+        })
+      } else if (
+        chunk.event === RunEvent.RunContent ||
+        chunk.event === RunEvent.TeamRunContent
+      ) {
+        // Handle source-tagged events: create bubble + agent bubble
+        if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
+          const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
+          setMessages((prevMessages) => {
+            const newMessages = [...prevMessages]
+            newMessages.push({
+              role: role as any,
+              content: typeof chunk.content === 'string' ? chunk.content : '',
+              created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+              member_name: (chunk as any).member_name
+            })
+            newMessages.push({
+              role: 'agent',
+              content: '',
+              tool_calls: [],
+              streamingError: false,
+              created_at: (chunk.created_at ?? Math.floor(Date.now() / 1000)) + 1,
+              member_name: (chunk as any).member_name
+            })
+            return newMessages
+          })
+          return
+        }
+        setMessages((prevMessages) => {
+          const newMessages = [...prevMessages]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (
+            lastMessage &&
+            lastMessage.role === 'agent' &&
+            typeof chunk.content === 'string'
+          ) {
+            const uniqueContent = chunk.content.replace(
+              prevMessages[prevMessages.length - 1]?.content || '',
+              ''
+            )
+            lastMessage.content += uniqueContent
+
+            // Handle tool calls streaming
+            lastMessage.tool_calls = processChunkToolCalls(
+              chunk,
+              lastMessage.tool_calls
+            )
+            if (chunk.extra_data?.reasoning_steps) {
+              lastMessage.extra_data = {
+                ...lastMessage.extra_data,
+                reasoning_steps: chunk.extra_data.reasoning_steps
+              }
+            }
+
+            if (chunk.extra_data?.references) {
+              lastMessage.extra_data = {
+                ...lastMessage.extra_data,
+                references: chunk.extra_data.references
+              }
+            }
+
+            lastMessage.created_at =
+              chunk.created_at ?? lastMessage.created_at
+            if (chunk.images) {
+              lastMessage.images = chunk.images
+            }
+            if (chunk.videos) {
+              lastMessage.videos = chunk.videos
+            }
+            if (chunk.audio) {
+              lastMessage.audio = chunk.audio
+            }
+          } else if (
+            lastMessage &&
+            lastMessage.role === 'agent' &&
+            typeof chunk?.content !== 'string' &&
+            chunk.content !== null
+          ) {
+            const jsonBlock = getJsonMarkdown(chunk?.content)
+
+            lastMessage.content += jsonBlock
+          } else if (
+            lastMessage &&
+            chunk.response_audio?.transcript &&
+            typeof chunk.response_audio?.transcript === 'string'
+          ) {
+            const transcript = chunk.response_audio.transcript
+            lastMessage.response_audio = {
+              ...lastMessage.response_audio,
+              transcript:
+                lastMessage.response_audio?.transcript + transcript
+            }
+          }
+          return newMessages
+        })
+      } else if (
+        chunk.event === RunEvent.ReasoningStep ||
+        chunk.event === RunEvent.TeamReasoningStep
+      ) {
+        setMessages((prevMessages) => {
+          const newMessages = [...prevMessages]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.role === 'agent') {
+            const existingSteps =
+              lastMessage.extra_data?.reasoning_steps ?? []
+            const incomingSteps = chunk.extra_data?.reasoning_steps ?? []
+            lastMessage.extra_data = {
+              ...lastMessage.extra_data,
+              reasoning_steps: [...existingSteps, ...incomingSteps]
+            }
+          }
+          return newMessages
+        })
+      } else if (
+        chunk.event === RunEvent.ReasoningCompleted ||
+        chunk.event === RunEvent.TeamReasoningCompleted
+      ) {
+        setMessages((prevMessages) => {
+          const newMessages = [...prevMessages]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.role === 'agent') {
+            if (chunk.extra_data?.reasoning_steps) {
+              lastMessage.extra_data = {
+                ...lastMessage.extra_data,
+                reasoning_steps: chunk.extra_data.reasoning_steps
+              }
+            }
+          }
+          return newMessages
+        })
+      } else if (
+        chunk.event === RunEvent.RunError ||
+        chunk.event === RunEvent.TeamRunError ||
+        chunk.event === RunEvent.TeamRunCancelled
+      ) {
+        updateMessagesWithErrorState()
+        const errorContent =
+          (chunk.content as string) ||
+          (chunk.event === RunEvent.TeamRunCancelled
+            ? 'Run cancelled'
+            : 'Error during run')
+        setStreamingErrorMessage(errorContent)
+      } else if (
+        chunk.event === RunEvent.UpdatingMemory ||
+        chunk.event === RunEvent.TeamMemoryUpdateStarted ||
+        chunk.event === RunEvent.TeamMemoryUpdateCompleted
+      ) {
+        // No-op for now; could surface a lightweight UI indicator in the future
+      } else if (
+        chunk.event === RunEvent.RunCompleted ||
+        chunk.event === RunEvent.TeamRunCompleted
+      ) {
+        setMessages((prevMessages) => {
+          const newMessages = prevMessages.map((message, index) => {
+            if (
+              index === prevMessages.length - 1 &&
+              message.role === 'agent'
+            ) {
+              // Keep existing content if RunCompleted has empty content
+              // (content was already delivered via RunContent events)
+              let updatedContent: string = message.content
+              if (typeof chunk.content === 'string' && chunk.content) {
+                updatedContent = chunk.content
+              } else if (chunk.content && typeof chunk.content !== 'string') {
+                try {
+                  updatedContent = JSON.stringify(chunk.content)
+                } catch {
+                  // keep existing
+                }
+              }
+              return {
+                ...message,
+                content: updatedContent,
+                tool_calls: processChunkToolCalls(
+                  chunk,
+                  message.tool_calls
+                ),
+                images: chunk.images ?? message.images,
+                videos: chunk.videos ?? message.videos,
+                response_audio: chunk.response_audio,
+                created_at: chunk.created_at ?? message.created_at,
+                extra_data: {
+                  reasoning_steps:
+                    chunk.extra_data?.reasoning_steps ??
+                    message.extra_data?.reasoning_steps,
+                  references:
+                    chunk.extra_data?.references ??
+                    message.extra_data?.references
+                }
+              }
+            }
+            return message
+          })
+          return newMessages
+        })
+      }
+    },
+    [
+      setMessages,
+      updateMessagesWithErrorState,
+      setStreamingErrorMessage,
+      setSessionsData,
+      sessionId,
+      setSessionId,
+      processChunkToolCalls,
+      setPendingQueue
+    ]
+  )
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const chunk = (e as CustomEvent).detail
+      // Filter: only process events for the current session, or session-establishing events
+      const isSessionEvent = chunk.event === RunEvent.RunStarted ||
+        chunk.event === RunEvent.TeamRunStarted ||
+        chunk.event === RunEvent.ReasoningStarted ||
+        chunk.event === RunEvent.TeamReasoningStarted ||
+        (chunk.event as string) === 'AgentRegistered'
+      if (!isSessionEvent && chunk.session_id && sessionId && chunk.session_id !== sessionId) return
+      processChunk(chunk)
+    }
+    window.addEventListener('team-sse-event', handler)
+    return () => window.removeEventListener('team-sse-event', handler)
+  }, [processChunk, sessionId])
+
   const handleStreamResponse = useCallback(
     async (input: string | FormData) => {
       setIsStreaming(true)
@@ -148,279 +443,7 @@ const useAIChatStreamHandler = () => {
           headers,
           requestBody: formData,
           onChunk: (chunk: RunResponse) => {
-            if (
-              chunk.event === RunEvent.RunStarted ||
-              chunk.event === RunEvent.TeamRunStarted ||
-              chunk.event === RunEvent.ReasoningStarted ||
-              chunk.event === RunEvent.TeamReasoningStarted
-            ) {
-              newSessionId = chunk.session_id as string
-              setSessionId(chunk.session_id as string)
-              if (
-                (!sessionId || sessionId !== chunk.session_id) &&
-                chunk.session_id
-              ) {
-                const sessionData = {
-                  session_id: chunk.session_id as string,
-                  session_name: formData.get('message') as string,
-                  created_at: chunk.created_at
-                }
-                setSessionsData((prevSessionsData) => {
-                  const sessionExists = prevSessionsData?.some(
-                    (session) => session.session_id === chunk.session_id
-                  )
-                  if (sessionExists) {
-                    return prevSessionsData
-                  }
-                  return [sessionData, ...(prevSessionsData ?? [])]
-                })
-              }
-            } else if (
-              (chunk.event as string) === 'AgentRegistered'
-            ) {
-              // New agent created — refresh session list
-              setSessionsData((prev) => prev)
-              window.dispatchEvent(new Event('sessions-refresh'))
-            } else if (
-              (chunk.event as string) === 'MessageQueued'
-            ) {
-              // Server says a message entered the queue — add to pending display
-              setPendingQueue((prev) => [...prev, {
-                content: typeof chunk.content === 'string' ? chunk.content : '',
-                source: (chunk as any).source || 'user',
-                created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
-              }])
-            } else if (
-              (chunk.event as string) === 'MessageDequeued'
-            ) {
-              // Server says a message left the queue — remove from pending display
-              const content = typeof chunk.content === 'string' ? chunk.content : ''
-              const source = (chunk as any).source || 'user'
-              setPendingQueue((prev) => {
-                const idx = prev.findIndex((p) => p.content === content && p.source === source)
-                if (idx >= 0) return [...prev.slice(0, idx), ...prev.slice(idx + 1)]
-                return prev
-              })
-            } else if (
-              chunk.event === RunEvent.ToolCallStarted ||
-              chunk.event === RunEvent.TeamToolCallStarted ||
-              chunk.event === RunEvent.ToolCallCompleted ||
-              chunk.event === RunEvent.TeamToolCallCompleted
-            ) {
-              setMessages((prevMessages) => {
-                const newMessages = [...prevMessages]
-                const lastMessage = newMessages[newMessages.length - 1]
-                if (lastMessage && lastMessage.role === 'agent') {
-                  lastMessage.tool_calls = processChunkToolCalls(
-                    chunk,
-                    lastMessage.tool_calls
-                  )
-                }
-                return newMessages
-              })
-            } else if (
-              chunk.event === RunEvent.RunContent ||
-              chunk.event === RunEvent.TeamRunContent
-            ) {
-              // Handle source-tagged events: create bubble + agent bubble
-              if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
-                const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
-                setMessages((prevMessages) => {
-                  const newMessages = [...prevMessages]
-                  newMessages.push({
-                    role: role as any,
-                    content: typeof chunk.content === 'string' ? chunk.content : '',
-                    created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
-                    member_name: (chunk as any).member_name
-                  })
-                  newMessages.push({
-                    role: 'agent',
-                    content: '',
-                    tool_calls: [],
-                    streamingError: false,
-                    created_at: (chunk.created_at ?? Math.floor(Date.now() / 1000)) + 1,
-                    member_name: (chunk as any).member_name
-                  })
-                  lastContent = ''
-                  return newMessages
-                })
-                return
-              }
-              setMessages((prevMessages) => {
-                const newMessages = [...prevMessages]
-                const lastMessage = newMessages[newMessages.length - 1]
-                if (
-                  lastMessage &&
-                  lastMessage.role === 'agent' &&
-                  typeof chunk.content === 'string'
-                ) {
-                  const uniqueContent = chunk.content.replace(lastContent, '')
-                  lastMessage.content += uniqueContent
-                  lastContent = chunk.content
-
-                  // Handle tool calls streaming
-                  lastMessage.tool_calls = processChunkToolCalls(
-                    chunk,
-                    lastMessage.tool_calls
-                  )
-                  if (chunk.extra_data?.reasoning_steps) {
-                    lastMessage.extra_data = {
-                      ...lastMessage.extra_data,
-                      reasoning_steps: chunk.extra_data.reasoning_steps
-                    }
-                  }
-
-                  if (chunk.extra_data?.references) {
-                    lastMessage.extra_data = {
-                      ...lastMessage.extra_data,
-                      references: chunk.extra_data.references
-                    }
-                  }
-
-                  lastMessage.created_at =
-                    chunk.created_at ?? lastMessage.created_at
-                  if (chunk.images) {
-                    lastMessage.images = chunk.images
-                  }
-                  if (chunk.videos) {
-                    lastMessage.videos = chunk.videos
-                  }
-                  if (chunk.audio) {
-                    lastMessage.audio = chunk.audio
-                  }
-                } else if (
-                  lastMessage &&
-                  lastMessage.role === 'agent' &&
-                  typeof chunk?.content !== 'string' &&
-                  chunk.content !== null
-                ) {
-                  const jsonBlock = getJsonMarkdown(chunk?.content)
-
-                  lastMessage.content += jsonBlock
-                  lastContent = jsonBlock
-                } else if (
-                  lastMessage &&
-                  chunk.response_audio?.transcript &&
-                  typeof chunk.response_audio?.transcript === 'string'
-                ) {
-                  const transcript = chunk.response_audio.transcript
-                  lastMessage.response_audio = {
-                    ...lastMessage.response_audio,
-                    transcript:
-                      lastMessage.response_audio?.transcript + transcript
-                  }
-                }
-                return newMessages
-              })
-            } else if (
-              chunk.event === RunEvent.ReasoningStep ||
-              chunk.event === RunEvent.TeamReasoningStep
-            ) {
-              setMessages((prevMessages) => {
-                const newMessages = [...prevMessages]
-                const lastMessage = newMessages[newMessages.length - 1]
-                if (lastMessage && lastMessage.role === 'agent') {
-                  const existingSteps =
-                    lastMessage.extra_data?.reasoning_steps ?? []
-                  const incomingSteps = chunk.extra_data?.reasoning_steps ?? []
-                  lastMessage.extra_data = {
-                    ...lastMessage.extra_data,
-                    reasoning_steps: [...existingSteps, ...incomingSteps]
-                  }
-                }
-                return newMessages
-              })
-            } else if (
-              chunk.event === RunEvent.ReasoningCompleted ||
-              chunk.event === RunEvent.TeamReasoningCompleted
-            ) {
-              setMessages((prevMessages) => {
-                const newMessages = [...prevMessages]
-                const lastMessage = newMessages[newMessages.length - 1]
-                if (lastMessage && lastMessage.role === 'agent') {
-                  if (chunk.extra_data?.reasoning_steps) {
-                    lastMessage.extra_data = {
-                      ...lastMessage.extra_data,
-                      reasoning_steps: chunk.extra_data.reasoning_steps
-                    }
-                  }
-                }
-                return newMessages
-              })
-            } else if (
-              chunk.event === RunEvent.RunError ||
-              chunk.event === RunEvent.TeamRunError ||
-              chunk.event === RunEvent.TeamRunCancelled
-            ) {
-              updateMessagesWithErrorState()
-              const errorContent =
-                (chunk.content as string) ||
-                (chunk.event === RunEvent.TeamRunCancelled
-                  ? 'Run cancelled'
-                  : 'Error during run')
-              setStreamingErrorMessage(errorContent)
-              if (newSessionId) {
-                setSessionsData(
-                  (prevSessionsData) =>
-                    prevSessionsData?.filter(
-                      (session) => session.session_id !== newSessionId
-                    ) ?? null
-                )
-              }
-            } else if (
-              chunk.event === RunEvent.UpdatingMemory ||
-              chunk.event === RunEvent.TeamMemoryUpdateStarted ||
-              chunk.event === RunEvent.TeamMemoryUpdateCompleted
-            ) {
-              // No-op for now; could surface a lightweight UI indicator in the future
-            } else if (
-              chunk.event === RunEvent.RunCompleted ||
-              chunk.event === RunEvent.TeamRunCompleted
-            ) {
-              setMessages((prevMessages) => {
-                const newMessages = prevMessages.map((message, index) => {
-                  if (
-                    index === prevMessages.length - 1 &&
-                    message.role === 'agent'
-                  ) {
-                    // Keep existing content if RunCompleted has empty content
-                    // (content was already delivered via RunContent events)
-                    let updatedContent: string = message.content
-                    if (typeof chunk.content === 'string' && chunk.content) {
-                      updatedContent = chunk.content
-                    } else if (chunk.content && typeof chunk.content !== 'string') {
-                      try {
-                        updatedContent = JSON.stringify(chunk.content)
-                      } catch {
-                        // keep existing
-                      }
-                    }
-                    return {
-                      ...message,
-                      content: updatedContent,
-                      tool_calls: processChunkToolCalls(
-                        chunk,
-                        message.tool_calls
-                      ),
-                      images: chunk.images ?? message.images,
-                      videos: chunk.videos ?? message.videos,
-                      response_audio: chunk.response_audio,
-                      created_at: chunk.created_at ?? message.created_at,
-                      extra_data: {
-                        reasoning_steps:
-                          chunk.extra_data?.reasoning_steps ??
-                          message.extra_data?.reasoning_steps,
-                        references:
-                          chunk.extra_data?.references ??
-                          message.extra_data?.references
-                      }
-                    }
-                  }
-                  return message
-                })
-                return newMessages
-              })
-            }
+            processChunk(chunk)
           },
           onError: (error) => {
             updateMessagesWithErrorState()
@@ -455,7 +478,6 @@ const useAIChatStreamHandler = () => {
       }
     },
     [
-      setMessages,
       updateMessagesWithErrorState,
       selectedEndpoint,
       authToken,
@@ -469,8 +491,7 @@ const useAIChatStreamHandler = () => {
       setSessionsData,
       sessionId,
       setSessionId,
-      processChunkToolCalls,
-      setPendingQueue
+      processChunk
     ]
   )
 
