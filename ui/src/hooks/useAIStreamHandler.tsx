@@ -201,16 +201,12 @@ const useAIChatStreamHandler = () => {
           const content = typeof chunk.content === 'string' ? chunk.content : ''
           setMessages((prevMessages) => {
             const newMessages = [...prevMessages]
-            const lastMsg = newMessages[newMessages.length - 1]
-            const alreadyAdded = role === 'user' && lastMsg?.role === 'user' && lastMsg?.content === content
-            if (!alreadyAdded) {
-              newMessages.push({
-                role: role as any,
-                content,
-                created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
-                member_name: (chunk as any).member_name
-              })
-            }
+            newMessages.push({
+              role: role as any,
+              content,
+              created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+              member_name: (chunk as any).member_name
+            })
             newMessages.push({
               role: 'agent',
               content: '',

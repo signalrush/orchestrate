@@ -126,6 +126,49 @@ if result["passing"]:  # clean
     ...
 ```
 
+### Use context to chain agent work
+
+Every `orch.run()` returns a `ContextResult` — auto-saved to the context store with a summary and a `.md` file. Pass results between agents with `context=`:
+
+```python
+# Step 1: researcher produces findings — auto-saved
+c1 = await orch.run("research X", to="researcher", schema={"findings": "str"})
+
+# Step 2: pass findings as context to implementer
+c2 = await orch.run("implement based on research", to="coder", context=[c1])
+
+# The coder sees:
+# [Context from researcher (full output: ~/.orchestrate/context/86.md)]:
+# <summary of findings>
+#
+# implement based on research
+```
+
+`ContextResult` behaves like a dict for schema fields, and `print(c1)` shows the summary:
+
+```python
+c1 = await orch.run("analyze", to="analyst", schema={"score": "int", "reason": "str"})
+print(c1)              # prints the summary
+print(c1["score"])     # 87
+print(c1["reason"])    # "Good coverage but..."
+print(c1.id)           # context entry ID
+print(c1.file)         # ~/.orchestrate/context/42.md
+```
+
+Recall past results from the context store:
+
+```python
+past = await orch.recall(tags="research", agent="researcher", limit=5)
+c3 = await orch.run("build on prior work", to="builder", context=past)
+```
+
+Pin important context so it always appears in recall:
+
+```python
+await orch.pin(c1)     # always included in recall results
+await orch.unpin(c1)   # remove pin
+```
+
 ### Configure agents for different roles
 
 ```python

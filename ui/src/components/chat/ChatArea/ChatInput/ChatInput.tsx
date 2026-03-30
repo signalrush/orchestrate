@@ -10,7 +10,6 @@ import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
 
 const ChatInput = () => {
   const { chatInputRef } = useStore()
-  const setMessages = useStore((state) => state.setMessages)
 
   const [selectedAgent] = useQueryState('agent')
   const [teamId] = useQueryState('team')
@@ -22,10 +21,6 @@ const ChatInput = () => {
     if (!inputMessage.trim()) return
     const currentMessage = inputMessage
     setInputMessage('')
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', content: currentMessage, created_at: Math.floor(Date.now() / 1000) },
-    ])
 
     try {
       const endpointUrl = constructEndpointUrl(selectedEndpoint)
