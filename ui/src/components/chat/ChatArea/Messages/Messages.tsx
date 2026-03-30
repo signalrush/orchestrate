@@ -205,7 +205,7 @@ const ToolComponent = memo(({ tools }: ToolCallProps) => {
       <button
         onClick={() => setExpanded(!expanded)}
         className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-          hasError ? 'bg-red-950/30 hover:bg-red-950/50' : 'bg-muted/60 hover:bg-white/5'
+          hasError ? 'bg-red-950/30 hover:bg-red-950/50' : 'bg-white/5 hover:bg-white/10'
         }`}
       >
         {hasError && <span className="text-red-400 flex-shrink-0 text-[10px]">✕</span>}
