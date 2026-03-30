@@ -59,6 +59,15 @@ def _db():
         completed_at INTEGER
     )"""
     )
+    conn.execute("""CREATE TABLE IF NOT EXISTS context_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    agent TEXT,
+    tags TEXT,
+    pinned INTEGER DEFAULT 0,
+    run_id TEXT,
+    created_at INTEGER
+)""")
     return conn
 
 app.add_middleware(
@@ -850,6 +859,105 @@ async def delete_session(session_id: str):
     RUNS.pop(session_id, None)
     return {"status": "deleted"}
 
+
+
+# ---------------------------------------------------------------------------
+# Context endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/context")
+async def save_context(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    tags = json.dumps(data.get("tags", []))
+    agent = data.get("agent", "")
+    run_id = data.get("run_id")
+    now = int(time.time())
+    conn = _db()
+    cur = conn.execute(
+        "INSERT INTO context_entries (text, agent, tags, run_id, created_at) VALUES (?, ?, ?, ?, ?)",
+        (text, agent, tags, run_id, now),
+    )
+    entry_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return {"id": entry_id, "created_at": now}
+
+
+@app.get("/context")
+async def search_context(
+    q: str = Query(""),
+    tags: str = Query(""),
+    agent: str = Query(""),
+    limit: int = Query(50),
+):
+    conn = _db()
+    clauses: list[str] = []
+    params: list[str | int] = []
+    if q:
+        clauses.append("text LIKE ?")
+        params.append(f"%{q}%")
+    if tags:
+        for tag in tags.split(","):
+            tag = tag.strip()
+            if tag:
+                clauses.append("id IN (SELECT ce.id FROM context_entries ce, json_each(ce.tags) je WHERE je.value = ?)")
+                params.append(tag)
+    if agent:
+        clauses.append("agent = ?")
+        params.append(agent)
+    where = " AND ".join(clauses)
+    sql = "SELECT * FROM context_entries"
+    if where:
+        sql += f" WHERE {where}"
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    data = []
+    for r in rows:
+        entry = dict(r)
+        entry["tags"] = json.loads(entry["tags"]) if entry["tags"] else []
+        data.append(entry)
+    return {"data": data}
+
+
+@app.post("/context/{entry_id}/pin")
+async def pin_context(entry_id: int):
+    conn = _db()
+    cur = conn.execute("UPDATE context_entries SET pinned = 1 WHERE id = ?", (entry_id,))
+    conn.commit()
+    rowcount = cur.rowcount
+    conn.close()
+    if rowcount == 0:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.delete("/context/{entry_id}/pin")
+async def unpin_context(entry_id: int):
+    conn = _db()
+    cur = conn.execute("UPDATE context_entries SET pinned = 0 WHERE id = ?", (entry_id,))
+    conn.commit()
+    rowcount = cur.rowcount
+    conn.close()
+    if rowcount == 0:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.delete("/context/{entry_id}")
+async def delete_context(entry_id: int):
+    conn = _db()
+    cur = conn.execute("DELETE FROM context_entries WHERE id = ?", (entry_id,))
+    conn.commit()
+    rowcount = cur.rowcount
+    conn.close()
+    if rowcount == 0:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"status": "deleted"}
 
 # ---------------------------------------------------------------------------
 # Backwards-compat: route session message to owning agent
