@@ -196,7 +196,7 @@ class Orchestrate:
             prefix_parts = []
             for entry in context:
                 if isinstance(entry, str):
-                    entry = await self._fetch_context(entry)
+                    entry = await self.get_context(entry)
                 if entry is not None:
                     prefix_parts.append(
                         f"[Context from {entry.agent} (full output: {entry.file})]:\n{entry.summary}"
@@ -308,7 +308,7 @@ class Orchestrate:
             file=file_path,
         )
 
-    async def _fetch_context(self, entry_id: str) -> "ContextResult | None":
+    async def get_context(self, entry_id: str) -> "ContextResult | None":
         """Fetch a single context entry by ID from GET /context/{entry_id}."""
         if not self._api_url:
             return None
