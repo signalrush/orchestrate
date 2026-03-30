@@ -97,7 +97,7 @@ const UserMessage = memo(({ message }: MessageProps) => {
       <div className="flex-shrink-0">
         <Icon type="user" size="sm" />
       </div>
-      <div className="text-sm rounded-lg font-geist text-secondary">
+      <div className="rounded-lg font-inter text-[0.875rem] font-normal leading-5 tracking-[-0.02em] text-secondary">
         {message.content}
         {timeStr && <span className="text-xs text-muted-foreground ml-2 whitespace-nowrap">{timeStr}</span>}
       </div>
@@ -118,13 +118,8 @@ const RemindMessage = memo(({ message }: MessageProps) => {
         </div>
         {timeStr && <span className="text-xs text-muted-foreground ml-2 whitespace-nowrap">{timeStr}</span>}
       </div>
-      <div
-        className="text-md rounded-lg font-geist text-secondary italic"
-        title={message.content}
-      >
-        {message.content && message.content.length > 100
-          ? message.content.slice(0, 100) + '...'
-          : message.content}
+      <div className="flex w-full flex-col gap-4 font-geist text-secondary/70">
+        <MarkdownRenderer>{message.content}</MarkdownRenderer>
       </div>
     </div>
   )
