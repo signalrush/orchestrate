@@ -1,6 +1,8 @@
 """Smoke test: single remind() call."""
+
 import asyncio
 from orchestrate import Auto
+
 
 async def main():
     auto = Auto()
@@ -8,5 +10,6 @@ async def main():
     print(f"Result: {result}")
     assert "orchestrate works" in result.lower(), f"Unexpected: {result}"
     print("PASS")
+
 
 asyncio.run(main())

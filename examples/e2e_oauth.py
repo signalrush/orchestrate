@@ -1,4 +1,5 @@
 """End-to-end test using OAuth token from ~/.claude/.credentials.json"""
+
 import asyncio
 import json
 import os
@@ -9,6 +10,7 @@ os.environ["ANTHROPIC_API_KEY"] = creds["claudeAiOauth"]["accessToken"]
 print(f"Using OAuth token: {os.environ['ANTHROPIC_API_KEY'][:20]}...")
 
 from orchestrate import Auto, state
+
 
 async def main():
     auto = Auto(cwd="/home/tianhao/orchestrate")
@@ -23,8 +25,7 @@ async def main():
     # === Test 2: Schema parsing ===
     print("\n--- Test 2: Schema remind ---")
     r = await auto.remind(
-        "What is 7 * 8?",
-        schema={"answer": "int", "explanation": "str"}
+        "What is 7 * 8?", schema={"answer": "int", "explanation": "str"}
     )
     print(f"Result: {r}")
     assert isinstance(r, dict)
@@ -33,14 +34,19 @@ async def main():
 
     # === Test 3: Named agent ===
     print("\n--- Test 3: Named agent ---")
-    r = await auto.task("What is the square root of 144? Reply with just the number.", to="calculator")
+    r = await auto.task(
+        "What is the square root of 144? Reply with just the number.", to="calculator"
+    )
     print(f"Calculator: {r.strip()}")
     assert "12" in r
     print("PASS")
 
     # === Test 4: Session accumulation (same agent, 2nd call) ===
     print("\n--- Test 4: Session accumulation ---")
-    r = await auto.task("What was the last number I asked you about? Reply with just the number.", to="calculator")
+    r = await auto.task(
+        "What was the last number I asked you about? Reply with just the number.",
+        to="calculator",
+    )
     print(f"Calculator (recall): {r.strip()}")
     assert "144" in r or "12" in r  # should remember previous context
     print("PASS")
@@ -70,11 +76,14 @@ async def main():
 
     # === Test 7: Self remind uses agent results ===
     print("\n--- Test 7: Self uses agent results ---")
-    research = await auto.task("List 3 prime numbers under 20, comma-separated, nothing else.", to="math_helper")
+    research = await auto.task(
+        "List 3 prime numbers under 20, comma-separated, nothing else.",
+        to="math_helper",
+    )
     result = await auto.remind(
         f"A math helper gave me these primes: {research.strip()}. "
         "What is their sum?",
-        schema={"sum": "int"}
+        schema={"sum": "int"},
     )
     print(f"Primes: {research.strip()}, Sum: {result}")
     assert isinstance(result, dict)
@@ -90,7 +99,9 @@ async def main():
 
     # Cleanup
     import pathlib
+
     pathlib.Path("orchestrate-state.json").unlink(missing_ok=True)
     pathlib.Path(".orchestrate-state.lock").unlink(missing_ok=True)
+
 
 asyncio.run(main())

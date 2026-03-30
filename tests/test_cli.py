@@ -51,10 +51,17 @@ def test_list_shows_runs(clean_runs_dir):
     for rid, status in [("ab12", "running"), ("cd34", "done")]:
         d = clean_runs_dir / rid
         d.mkdir()
-        (d / "run.json").write_text(json.dumps({
-            "id": rid, "pid": 99999, "file": f"{rid}.py",
-            "start_time": time.time(), "status": status,
-        }))
+        (d / "run.json").write_text(
+            json.dumps(
+                {
+                    "id": rid,
+                    "pid": 99999,
+                    "file": f"{rid}.py",
+                    "start_time": time.time(),
+                    "status": status,
+                }
+            )
+        )
         (d / "output.log").write_text("")
     runs = cmd_list()
     assert len(runs) == 2
@@ -66,10 +73,17 @@ def test_status_returns_run_info(clean_runs_dir):
     rid = "ef56"
     d = clean_runs_dir / rid
     d.mkdir()
-    (d / "run.json").write_text(json.dumps({
-        "id": rid, "pid": os.getpid(), "file": "test.py",
-        "start_time": time.time(), "status": "running",
-    }))
+    (d / "run.json").write_text(
+        json.dumps(
+            {
+                "id": rid,
+                "pid": os.getpid(),
+                "file": "test.py",
+                "start_time": time.time(),
+                "status": "running",
+            }
+        )
+    )
     (d / "output.log").write_text("line1\nline2\n")
     info = cmd_status(rid)
     assert info["id"] == rid

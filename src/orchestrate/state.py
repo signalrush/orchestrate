@@ -78,15 +78,19 @@ def _read_modify_write(modifier):
 
 def set(key: str, value: Any) -> None:
     """Set a single key-value pair in state."""
+
     def _modify(s):
         s[key] = value
+
     _read_modify_write(_modify)
 
 
 def update(data: Dict[str, Any]) -> None:
     """Merge a dictionary into current state."""
+
     def _modify(s):
         s.update(data)
+
     _read_modify_write(_modify)
 
 

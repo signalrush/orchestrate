@@ -3,7 +3,9 @@ from orchestrate.core import _parse_json
 
 
 def test_parse_plain_json():
-    result = _parse_json('{"score": 3.5, "name": "test"}', {"score": "float", "name": "str"})
+    result = _parse_json(
+        '{"score": 3.5, "name": "test"}', {"score": "float", "name": "str"}
+    )
     assert result == {"score": 3.5, "name": "test"}
 
 
