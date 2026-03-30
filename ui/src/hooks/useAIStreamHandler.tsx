@@ -165,14 +165,19 @@ const useAIChatStreamHandler = () => {
         // Handle source-tagged events: create bubble + agent bubble
         if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
           const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
+          const content = typeof chunk.content === 'string' ? chunk.content : ''
           setMessages((prevMessages) => {
             const newMessages = [...prevMessages]
-            newMessages.push({
-              role: role as any,
-              content: typeof chunk.content === 'string' ? chunk.content : '',
-              created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
-              member_name: (chunk as any).member_name
-            })
+            const lastMsg = newMessages[newMessages.length - 1]
+            const alreadyAdded = role === 'user' && lastMsg?.role === 'user' && lastMsg?.content === content
+            if (!alreadyAdded) {
+              newMessages.push({
+                role: role as any,
+                content,
+                created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+                member_name: (chunk as any).member_name
+              })
+            }
             newMessages.push({
               role: 'agent',
               content: '',

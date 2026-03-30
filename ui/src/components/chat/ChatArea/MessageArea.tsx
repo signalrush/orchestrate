@@ -5,9 +5,11 @@ import Messages from './Messages'
 import ScrollToBottom from '@/components/chat/ChatArea/ScrollToBottom'
 import { StickToBottom } from 'use-stick-to-bottom'
 import useTeamStream from '@/hooks/useTeamStream'
+import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 
 const MessageArea = () => {
   useTeamStream()
+  useAIChatStreamHandler()
   const { messages } = useStore()
   const pendingQueue = useStore((state) => state.pendingQueue)
 
