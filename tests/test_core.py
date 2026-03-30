@@ -1,53 +1,91 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from orchestrate.core import Auto
+from unittest.mock import AsyncMock, patch
+from orchestrate.core import Orchestrate, Auto, _parse_json, _validate_schema
 
 
-def test_init_defaults():
-    auto = Auto()
-    assert auto._model == "claude-sonnet-4-6"
-    assert auto._sessions == {}
+def test_init_with_api_url():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    assert orch._api_url == "http://localhost:7777"
 
 
-def test_init_custom():
-    auto = Auto(cwd="/tmp/test", model="claude-opus-4-6")
-    assert auto._cwd == "/tmp/test"
-    assert auto._model == "claude-opus-4-6"
-
-
-def test_agent_declares():
-    auto = Auto()
-    auto.agent("researcher")
-    assert "researcher" in auto._sessions
-    assert auto._sessions["researcher"]["session_id"] is None
-
-
-def test_agent_custom_cwd():
-    auto = Auto(cwd="/default")
-    auto.agent("worker", cwd="/custom")
-    assert auto._sessions["worker"]["cwd"] == "/custom"
-
-
-def test_agent_idempotent():
-    auto = Auto()
-    auto.agent("x", cwd="/first")
-    auto.agent("x", cwd="/second")
-    assert auto._sessions["x"]["cwd"] == "/first"
+def test_auto_is_orchestrate():
+    assert Auto is Orchestrate
 
 
 @pytest.mark.asyncio
-async def test_remind_delegates_to_task():
-    auto = Auto()
-    auto.task = AsyncMock(return_value="done")
-    result = await auto.remind("hello")
-    auto.task.assert_called_once_with("hello", to="self", schema=None)
+async def test_agent_posts_to_api():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    orch._client.post = AsyncMock(return_value=mock_resp)
+    await orch.agent("researcher")
+    orch._client.post.assert_called_once_with("/agents", json={"name": "researcher"})
+    await orch.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agent_custom_cwd():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    orch._client.post = AsyncMock(return_value=mock_resp)
+    await orch.agent("worker", cwd="/custom")
+    orch._client.post.assert_called_once_with(
+        "/agents", json={"name": "worker", "cwd": "/custom"}
+    )
+    await orch.aclose()
+
+
+@pytest.mark.asyncio
+async def test_run_task_posts_ephemeral():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    mock_resp.json = lambda: {"run_id": "abc", "status": "ok"}
+    orch._client.post = AsyncMock(return_value=mock_resp)
+    result = await orch.run_task("do something", to="worker")
+    orch._client.post.assert_called_once_with(
+        "/agents/worker/runs", json={"task": "do something"}
+    )
+    assert result["run_id"] == "abc"
+    await orch.aclose()
+
+
+@pytest.mark.asyncio
+async def test_save_context_posts():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    mock_resp.json = lambda: {"id": 1, "created_at": 1000}
+    orch._client.post = AsyncMock(return_value=mock_resp)
+    result = await orch.save_context("hello", tags=["test"])
+    orch._client.post.assert_called_once_with(
+        "/context", json={"text": "hello", "tags": ["test"]}
+    )
+    assert result["id"] == 1
+    await orch.aclose()
+
+
+@pytest.mark.asyncio
+async def test_recall_context_gets():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = lambda: None
+    mock_resp.json = lambda: {"data": [{"text": "hello"}]}
+    orch._client.get = AsyncMock(return_value=mock_resp)
+    result = await orch.recall_context(q="hello", agent="bot")
+    orch._client.get.assert_called_once_with(
+        "/context", params={"limit": 50, "q": "hello", "agent": "bot"}
+    )
+    assert result[0]["text"] == "hello"
+    await orch.aclose()
+
+
+@pytest.mark.asyncio
+async def test_remind_delegates_to_run():
+    orch = Orchestrate(api_url="http://localhost:7777")
+    orch.run = AsyncMock(return_value="done")
+    result = await orch.remind("hello")
+    orch.run.assert_called_once_with("hello", schema=None)
     assert result == "done"
-
-
-@pytest.mark.asyncio
-async def test_remind_with_schema_delegates():
-    auto = Auto()
-    auto.task = AsyncMock(return_value={"score": 1.0})
-    result = await auto.remind("test", schema={"score": "float"})
-    auto.task.assert_called_once_with("test", to="self", schema={"score": "float"})
-    assert result == {"score": 1.0}
+    await orch.aclose()

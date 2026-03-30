@@ -29,7 +29,7 @@ def _write_test_program(path: Path, body: str = "pass") -> Path:
 def test_run_creates_run_dir_and_json(clean_runs_dir, tmp_path):
     prog = _write_test_program(tmp_path)
     run_id = cmd_run(str(prog))
-    assert len(run_id) == 4
+    assert len(run_id) == 8
     run_dir = clean_runs_dir / run_id
     assert run_dir.exists()
     run_json = json.loads((run_dir / "run.json").read_text())
@@ -118,7 +118,10 @@ def test_program_completes_marks_done(clean_runs_dir, tmp_path):
 def test_program_error_marks_error(clean_runs_dir, tmp_path):
     prog = _write_test_program(tmp_path, body="raise ValueError('boom')")
     run_id = cmd_run(str(prog))
-    time.sleep(2)
-    info = cmd_status(run_id)
+    for _ in range(20):
+        time.sleep(0.5)
+        info = cmd_status(run_id)
+        if info["status"] != "running":
+            break
     assert info["status"] == "error"
     assert "boom" in info.get("error", "")

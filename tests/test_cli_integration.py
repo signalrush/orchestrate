@@ -70,8 +70,10 @@ def test_program_error_marks_error(clean_runs_dir, tmp_path):
     prog.write_text("async def main(auto):\n    raise ValueError('boom')\n")
 
     run_id = cmd_run(str(prog))
-    time.sleep(2)
-
-    info = cmd_status(run_id)
+    for _ in range(20):
+        time.sleep(0.5)
+        info = cmd_status(run_id)
+        if info["status"] != "running":
+            break
     assert info["status"] == "error"
     assert "boom" in info.get("error", "")

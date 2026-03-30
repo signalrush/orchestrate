@@ -99,7 +99,7 @@ def _validate_schema(data: dict, schema: dict) -> None:
                 continue
             type_spec = type_spec.split("|")[0].strip()
         expected = _TYPE_MAP.get(type_spec.strip().lower())
-        if expected and not isinstance(value, expected):
+        if expected and not isinstance(value, expected):  # type: ignore[arg-type]
             errors.append(f"'{key}' expected {type_spec}, got {type(value).__name__}")
     if errors:
         raise ValueError(f"Schema validation failed: {', '.join(errors)}")
@@ -115,7 +115,9 @@ class Orchestrate:
 
     def __init__(self, api_url: str | None = None):
         self._api_url = api_url
-        self._client = httpx.AsyncClient(base_url=api_url, timeout=None)
+        self._client = httpx.AsyncClient(
+            base_url=api_url or "http://localhost:7777", timeout=None
+        )
 
     async def agent(
         self,
