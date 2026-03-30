@@ -257,6 +257,7 @@ class Orchestrate:
         summary = result_text[:120]
         file_path = str(Path.home() / ".orchestrate" / "context" / f"{entry_id}.md")
 
+        run_id = str(uuid.uuid4())
         if self._api_url:
             try:
                 save_resp = await self._client.post(
@@ -265,6 +266,7 @@ class Orchestrate:
                         "text": result_text,
                         "agent": to,
                         "tags": [],
+                        "run_id": run_id,
                     },
                 )
                 if save_resp.status_code == 200:
@@ -272,8 +274,10 @@ class Orchestrate:
                     entry_id = str(save_data.get("id", entry_id))
                     summary = save_data.get("summary", summary)
                     file_path = str(Path.home() / ".orchestrate" / "context" / f"{entry_id}.md")
-            except Exception:
-                pass
+                else:
+                    print(f"[orchestrate] warning: POST /context returned {save_resp.status_code}", flush=True)
+            except Exception as e:
+                print(f"[orchestrate] warning: failed to save context: {e}", flush=True)
 
         # Write .md file
         try:
@@ -291,8 +295,8 @@ class Orchestrate:
                 f"## Structured Data\n```json\n{data_json}\n```\n"
             )
             Path(file_path).write_text(md_content)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[orchestrate] warning: failed to write context file: {e}", flush=True)
 
         return ContextResult(
             id=entry_id,
@@ -358,13 +362,21 @@ class Orchestrate:
         """Pin a context entry. Accepts ContextResult or str ID."""
         entry_id = entry.id if isinstance(entry, ContextResult) else entry
         if self._api_url:
-            await self._client.post(f"/context/{entry_id}/pin")
+            resp = await self._client.post(f"/context/{entry_id}/pin")
+            if resp.status_code == 404:
+                print(f"[orchestrate] warning: context entry {entry_id} not found for pin", flush=True)
+            else:
+                resp.raise_for_status()
 
     async def unpin(self, entry: "ContextResult | str") -> None:
         """Unpin a context entry. Accepts ContextResult or str ID."""
         entry_id = entry.id if isinstance(entry, ContextResult) else entry
         if self._api_url:
-            await self._client.delete(f"/context/{entry_id}/pin")
+            resp = await self._client.delete(f"/context/{entry_id}/pin")
+            if resp.status_code == 404:
+                print(f"[orchestrate] warning: context entry {entry_id} not found for unpin", flush=True)
+            else:
+                resp.raise_for_status()
 
     async def remind(self, instruction: str, schema: dict | None = None) -> "ContextResult":
         """Deprecated. Use run() instead."""
