@@ -20,6 +20,7 @@ RUNS_DIR = Path.home() / ".orchestrate" / "runs"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _run_dir(run_id: str) -> Path:
     return RUNS_DIR / run_id
 
@@ -45,7 +46,9 @@ def _pid_alive(pid: int) -> bool:
             return False
     except ChildProcessError:
         # Not our child — check via ps
-        r = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+        r = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+        )
         if r.returncode != 0:
             return False
         stat = r.stdout.strip()
@@ -69,6 +72,7 @@ def _elapsed(start_time: float) -> str:
 # Internal _exec command — runs inside the background subprocess
 # ---------------------------------------------------------------------------
 
+
 class _LazyOrchestrate:
     """Proxy that imports and instantiates orchestrate.core.Orchestrate on first use."""
 
@@ -78,8 +82,10 @@ class _LazyOrchestrate:
     def _get(self) -> object:
         if self._real is None:
             from orchestrate.core import Orchestrate
+
             api_url = os.environ.get("ORCHESTRATE_API_URL")
-            self._real = Orchestrate(api_url=api_url)
+            session_id = os.environ.get("ORCHESTRATE_SESSION_ID")
+            self._real = Orchestrate(api_url=api_url, session_id=session_id)
         return self._real
 
     def __getattr__(self, name: str):
@@ -120,7 +126,7 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
                 else:
                     await main_fn()
             finally:
-                if hasattr(orch, '_real') and orch._real is not None:
+                if hasattr(orch, "_real") and orch._real is not None:
                     await orch._real.aclose()
 
         asyncio.run(_run_with_cleanup(main_fn, orch, bool(params)))
@@ -136,6 +142,7 @@ def _exec_program(file_path: str, run_id: str, run_dir_path: str) -> None:
 # ---------------------------------------------------------------------------
 # Public commands
 # ---------------------------------------------------------------------------
+
 
 def cmd_run(file_path: str) -> str:
     """Launch file_path as a background process. Returns run ID."""
@@ -155,7 +162,12 @@ def cmd_run(file_path: str) -> str:
     }
     _write_run_json(run_id, data)
 
-    env = {**os.environ, "ORCHESTRATE_API_URL": os.environ.get("ORCHESTRATE_API_URL", "http://localhost:7777")}
+    env = {
+        **os.environ,
+        "ORCHESTRATE_API_URL": os.environ.get(
+            "ORCHESTRATE_API_URL", "http://localhost:7777"
+        ),
+    }
     with open(log_path, "w") as log_fd:
         proc = subprocess.Popen(
             [sys.executable, __file__, "_exec", abs_path, run_id, str(run_dir)],
@@ -169,7 +181,9 @@ def cmd_run(file_path: str) -> str:
     _write_run_json(run_id, data)
 
     print(f"Started run {run_id}  log: {log_path}")
-    print("Program running in background. STOP HERE — do not monitor or wait. The program will send remind messages through the queue.")
+    print(
+        "Program running in background. STOP HERE — do not monitor or wait. The program will send remind messages through the queue."
+    )
     return run_id
 
 
@@ -277,6 +291,7 @@ def cmd_log(run_id: str) -> None:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
@@ -303,7 +318,9 @@ def main(argv: list[str] | None = None) -> None:
     # stop subcommand
     stop_p = sub.add_parser("stop", help="Stop a run")
     stop_p.add_argument("id", nargs="?", help="Run ID")
-    stop_p.add_argument("--all", action="store_true", dest="all", help="Stop all running")
+    stop_p.add_argument(
+        "--all", action="store_true", dest="all", help="Stop all running"
+    )
 
     # log subcommand
     log_p = sub.add_parser("log", help="Tail log for a run")

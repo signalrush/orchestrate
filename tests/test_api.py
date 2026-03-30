@@ -1,9 +1,13 @@
 """Tests for the REST API server (agent-ui compatibility)."""
 
+import asyncio
+import json
+from unittest.mock import AsyncMock, patch, MagicMock
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS
+from api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db
 
 
 @pytest.fixture(autouse=True)
@@ -212,3 +216,49 @@ async def test_session_endpoint_renamed(client):
     routes = [r.path for r in app.routes if isinstance(r, APIRoute)]
     assert "/agents/{agent_name}/sessions" in routes
     assert "/agents/{agent_name}/runs" in routes  # new ephemeral endpoint
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_run_happy_path(client):
+    """POST /agents/{name}/runs executes task and stores result in DB."""
+    from claude_agent_sdk import AssistantMessage, ResultMessage
+
+    # Build mock messages that query() will yield
+    text_block = MagicMock()
+    text_block.text = '{"answer": 42}'
+    del text_block.name  # ensure hasattr(block, "name") is False
+
+    assistant_msg = MagicMock(spec=AssistantMessage)
+    assistant_msg.content = [text_block]
+
+    result_msg = MagicMock(spec=ResultMessage)
+    result_msg.session_id = "ephemeral-session-abc"
+
+    async def mock_query(prompt, options):
+        yield assistant_msg
+        yield result_msg
+
+    with patch("api.server.query", side_effect=mock_query):
+        with patch("api.server._summarize", return_value="The answer is 42."):
+            resp = await client.post(
+                "/agents/orchestrator/runs",
+                json={"task": "What is the answer?"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert "run_id" in body
+            assert body["status"] == "ok"
+            run_id = body["run_id"]
+
+            # Wait for background task to complete
+            if run_id in EPHEMERAL_TASKS:
+                await EPHEMERAL_TASKS[run_id]
+
+            # Verify stored in DB
+            resp2 = await client.get(f"/runs/{run_id}")
+            assert resp2.status_code == 200
+            run_data = resp2.json()
+            assert run_data["task"] == "What is the answer?"
+            assert run_data["text"] == '{"answer": 42}'
+            assert run_data["summary"] == "The answer is 42."
+            assert run_data["completed_at"] is not None

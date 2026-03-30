@@ -113,12 +113,22 @@ class Orchestrate:
     orch.agent(name, ...) — register an agent
     """
 
-    def __init__(self, api_url: str | None = None):
+    def __init__(self, api_url: str | None = None, session_id: str | None = None):
         self._api_url = api_url
-        self._client = httpx.AsyncClient(base_url=api_url, timeout=None)
+        self._session_id = session_id
+        client_kwargs: dict[str, Any] = {"timeout": None}
+        if api_url:
+            client_kwargs["base_url"] = api_url
+        self._client = httpx.AsyncClient(**client_kwargs)
 
-    async def agent(self, name: str, cwd: str | None = None, model: str | None = None,
-                    tools: list | None = None, prompt: str | None = None) -> None:
+    async def agent(
+        self,
+        name: str,
+        cwd: str | None = None,
+        model: str | None = None,
+        tools: list | None = None,
+        prompt: str | None = None,
+    ) -> None:
         """Declare a named agent via POST /agents."""
         config: dict[str, Any] = {"name": name}
         if cwd is not None:
@@ -142,7 +152,9 @@ class Orchestrate:
         """Close the underlying HTTP client."""
         await self._client.aclose()
 
-    async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
+    async def run(
+        self, instruction: str, to: str = "self", schema: dict | None = None
+    ) -> str | dict:
         """Send instruction to a named agent via POST /agents/{to}/message."""
         max_attempts = 3 if schema else 1
         last_error = None
@@ -154,8 +166,10 @@ class Orchestrate:
                 if attempt == 0:
                     prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
                 else:
-                    prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
-                               f"Keys and types:\n{schema_desc}")
+                    prompt += (
+                        f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
+                        f"Keys and types:\n{schema_desc}"
+                    )
 
             resp = await self._client.post(
                 f"/agents/{to}/message",
@@ -163,7 +177,9 @@ class Orchestrate:
             )
             resp.raise_for_status()
             result = resp.json()
-            result_text = result.get("content", "") if isinstance(result, dict) else str(result)
+            result_text = (
+                result.get("content", "") if isinstance(result, dict) else str(result)
+            )
 
             print(f"[{to}] {result_text[:200]}", flush=True)
 
@@ -176,7 +192,10 @@ class Orchestrate:
                 return parsed
             except ValueError as e:
                 last_error = e
-                print(f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
+                print(
+                    f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}",
+                    flush=True,
+                )
 
         if last_error is not None:
             raise last_error
@@ -186,7 +205,9 @@ class Orchestrate:
         """Deprecated. Use run() instead."""
         return await self.run(instruction, schema=schema)
 
-    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
+    async def task(
+        self, instruction: str, to: str, schema: dict | None = None
+    ) -> str | dict:
         """Deprecated. Use run(instruction, to=...) instead."""
         return await self.run(instruction, to=to, schema=schema)
 

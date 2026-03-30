@@ -50,7 +50,7 @@ def _db():
         "CREATE TABLE IF NOT EXISTS session_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, session_id TEXT, source TEXT, input TEXT, content TEXT, tools TEXT, created_at INTEGER)"
     )
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS runs (
+        """CREATE TABLE IF NOT EXISTS ephemeral_runs (
         id TEXT PRIMARY KEY,
         agent TEXT,
         task TEXT,
@@ -417,6 +417,7 @@ async def register_agent(request: Request):
     AGENTS[agent_name] = {
         "id": agent_name,
         "name": agent_name,
+        "db_id": agent_name,
         "model": data.get("model", "claude-sonnet-4-6"),
         "cwd": data.get("cwd", os.getcwd()),
         "tools": data.get("tools", ALL_TOOLS),
@@ -570,6 +571,34 @@ async def run_agent(
 # ---------------------------------------------------------------------------
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
+EPHEMERAL_TASKS: dict[str, asyncio.Task] = {}  # run_id → Task
+
+
+def _extract_last_json(text: str) -> str | None:
+    """Extract the last JSON object or array from text, ignoring surrounding prose."""
+    last_match = None
+    pos = len(text) - 1
+    while pos >= 0:
+        if text[pos] in ("}", "]"):
+            close_char = text[pos]
+            open_char = "{" if close_char == "}" else "["
+            depth = 0
+            for i in range(pos, -1, -1):
+                if text[i] == close_char:
+                    depth += 1
+                elif text[i] == open_char:
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[i : pos + 1]
+                        try:
+                            json.loads(candidate)
+                            return candidate
+                        except json.JSONDecodeError:
+                            break
+            pos -= 1
+        else:
+            pos -= 1
+    return last_match
 
 
 async def _summarize(text: str) -> str:
@@ -611,38 +640,38 @@ async def _execute_ephemeral_run(
 ) -> None:
     """Execute an ephemeral task inline (not via worker queue)."""
     now = int(time.time())
-    model = config.get("model", "claude-sonnet-4-6")
-    cwd = config.get("cwd", os.getcwd())
-    tools = config.get("tools", ALL_TOOLS)
-    messages: list[dict[str, Any]] = []
 
-    # Prepend context from previous runs if requested
-    prompt = task
-    if context_ids:
-        conn = _db()
-        for cid in context_ids:
-            row = conn.execute(
-                "SELECT summary, text FROM runs WHERE id = ?", (cid,)
-            ).fetchone()
-            if row:
-                ctx = row["summary"] or row["text"] or ""
-                if ctx:
-                    prompt = f"[Context from run {cid}]: {ctx}\n\n{prompt}"
-        conn.close()
+    try:
+        model = config.get("model", "claude-sonnet-4-6")
+        cwd = config.get("cwd", os.getcwd())
+        tools = config.get("tools", ALL_TOOLS)
+        messages: list[dict[str, Any]] = []
 
-    # Schema instruction
-    if schema:
-        prompt += f"\n\nYou MUST respond with valid JSON matching this schema: {json.dumps(schema)}"
+        # Prepend context from previous runs if requested
+        prompt = task
+        if context_ids:
+            conn = _db()
+            for cid in context_ids:
+                row = conn.execute(
+                    "SELECT summary, text FROM ephemeral_runs WHERE id = ?", (cid,)
+                ).fetchone()
+                if row:
+                    ctx = row["summary"] or row["text"] or ""
+                    if ctx:
+                        prompt = f"[Context from run {cid}]: {ctx}\n\n{prompt}"
+            conn.close()
 
-    accumulated_text = ""
-    resume_id: str | None = None
-    max_attempts = 3 if schema else 1
+        # Schema instruction
+        if schema:
+            prompt += f"\n\nYou MUST respond with valid JSON matching this schema: {json.dumps(schema)}"
 
-    for attempt in range(max_attempts):
         accumulated_text = ""
-        current_messages: list[dict[str, Any]] = []
+        max_attempts = 3 if schema else 1
 
-        try:
+        for attempt in range(max_attempts):
+            accumulated_text = ""
+            current_messages: list[dict[str, Any]] = []
+
             async for msg in query(
                 prompt=(
                     prompt
@@ -654,7 +683,7 @@ async def _execute_ephemeral_run(
                     permission_mode="bypassPermissions",
                     model=model,
                     effort="max",
-                    resume=resume_id,
+                    resume=None,  # always fresh — no resume across retries
                     setting_sources=["user"],
                     cwd=cwd,
                 ),
@@ -699,84 +728,104 @@ async def _execute_ephemeral_run(
                                 }
                             )
                             current_messages.append(tool_record)
-                elif isinstance(msg, ResultMessage):
-                    resume_id = msg.session_id
 
             messages.extend(current_messages)
 
             # Validate against schema if provided
             if schema:
-                try:
-                    parsed = json.loads(accumulated_text)
-                    # Basic key check — not full JSON Schema validation
-                    if isinstance(schema, dict) and "properties" in schema:
-                        required = set(
-                            schema.get("required", schema["properties"].keys())
-                        )
-                        if required - set(parsed.keys()):
-                            if attempt < max_attempts - 1:
-                                continue
-                    break  # valid
-                except (json.JSONDecodeError, AttributeError):
-                    if attempt < max_attempts - 1:
-                        continue
+                # Extract last JSON from accumulated text (may contain reasoning)
+                json_str = _extract_last_json(accumulated_text)
+                if json_str:
+                    try:
+                        parsed = json.loads(json_str)
+                        if isinstance(schema, dict) and "properties" in schema:
+                            required = set(
+                                schema.get("required", schema["properties"].keys())
+                            )
+                            if required - set(parsed.keys()):
+                                if attempt < max_attempts - 1:
+                                    continue
+                        break  # valid
+                    except json.JSONDecodeError:
+                        if attempt < max_attempts - 1:
+                            continue
+                elif attempt < max_attempts - 1:
+                    continue
             else:
                 break
 
-        except Exception as e:
-            _emit(
-                {
-                    "event": "RunError",
-                    "content": str(e),
-                    "agent_name": agent_name,
-                    "run_id": run_id,
-                    "created_at": int(time.time()),
-                }
-            )
-            break
+        # Parse structured data if schema was provided
+        data: str | None = None
+        if schema:
+            json_str = _extract_last_json(accumulated_text)
+            if json_str:
+                data = json_str
 
-    # Parse structured data if schema was provided
-    data: str | None = None
-    if schema:
-        try:
-            json.loads(accumulated_text)
-            data = accumulated_text
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # Summarize
+        summary = await _summarize(accumulated_text) if accumulated_text else ""
 
-    # Summarize
-    summary = await _summarize(accumulated_text) if accumulated_text else ""
+        # Store
+        completed_at = int(time.time())
+        conn = _db()
+        conn.execute(
+            "INSERT INTO ephemeral_runs (id, agent, task, schema, data, text, summary, messages, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                agent_name,
+                task,
+                json.dumps(schema) if schema else None,
+                data,
+                accumulated_text,
+                summary,
+                json.dumps(messages),
+                now,
+                completed_at,
+            ),
+        )
+        conn.commit()
+        conn.close()
 
-    # Store
-    completed_at = int(time.time())
-    conn = _db()
-    conn.execute(
-        "INSERT INTO runs (id, agent, task, schema, data, text, summary, messages, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            run_id,
-            agent_name,
-            task,
-            json.dumps(schema) if schema else None,
-            data,
-            accumulated_text,
-            summary,
-            json.dumps(messages),
-            now,
-            completed_at,
-        ),
-    )
-    conn.commit()
-    conn.close()
+        _emit(
+            {
+                "event": "EphemeralRunCompleted",
+                "run_id": run_id,
+                "agent_name": agent_name,
+                "summary": summary,
+                "created_at": completed_at,
+            }
+        )
 
-    _emit(
-        {
-            "event": "EphemeralRunCompleted",
-            "run_id": run_id,
-            "agent_name": agent_name,
-            "summary": summary,
-            "created_at": completed_at,
-        }
-    )
+    except Exception as e:
+        # Catch-all: emit error and write failed state to DB
+        _emit(
+            {
+                "event": "RunError",
+                "content": str(e),
+                "agent_name": agent_name,
+                "run_id": run_id,
+                "created_at": int(time.time()),
+            }
+        )
+        conn = _db()
+        conn.execute(
+            "INSERT OR REPLACE INTO ephemeral_runs (id, agent, task, schema, data, text, summary, messages, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                agent_name,
+                task,
+                None,
+                None,
+                "",
+                f"error: {e}",
+                "[]",
+                now,
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    finally:
+        EPHEMERAL_TASKS.pop(run_id, None)
 
 
 @app.post("/agents/{agent_name}/runs")
@@ -795,10 +844,11 @@ async def ephemeral_run(agent_name: str, request: Request):
     run_id = str(uuid.uuid4())
     config = AGENTS[agent_name]
 
-    # Execute inline (not via worker queue) in background task
-    asyncio.create_task(
+    # Store task reference to prevent GC
+    t = asyncio.create_task(
         _execute_ephemeral_run(run_id, agent_name, task, schema, context, config)
     )
+    EPHEMERAL_TASKS[run_id] = t
 
     return JSONResponse({"run_id": run_id, "status": "ok"})
 
@@ -807,7 +857,9 @@ async def ephemeral_run(agent_name: str, request: Request):
 async def get_run(run_id: str):
     """Retrieve a stored ephemeral run result."""
     conn = _db()
-    row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM ephemeral_runs WHERE id = ?", (run_id,)
+    ).fetchone()
     conn.close()
     if not row:
         return JSONResponse({"error": "run not found"}, status_code=404)
