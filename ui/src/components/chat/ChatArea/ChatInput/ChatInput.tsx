@@ -36,11 +36,11 @@ const ChatInput = () => {
           body: formData,
         }).catch(() => {})
       } else {
-        // New session: create via /runs (don't read stream — team SSE delivers events)
+        // New session: create via /sessions (don't read stream — team SSE delivers events)
         const formData = new FormData()
         formData.append('message', currentMessage)
         formData.append('stream', 'false')
-        fetch(`${endpointUrl}/agents/${agentId}/runs`, {
+        fetch(`${endpointUrl}/agents/${agentId}/sessions`, {
           method: 'POST',
           body: formData,
         }).catch(() => {})
