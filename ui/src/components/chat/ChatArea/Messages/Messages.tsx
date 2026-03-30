@@ -10,7 +10,7 @@ import {
   ReferenceData,
   Reference
 } from '@/types/os'
-import React, { type FC } from 'react'
+import React, { type FC, useState } from 'react'
 
 import Icon from '@/components/ui/icon'
 import ChatBlankState from './ChatBlankState'
@@ -115,7 +115,7 @@ const AgentMessageWrapper = ({ message }: MessageWrapperProps) => {
             />
           </Tooltip>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-1 w-full">
             {message.tool_calls.map((toolCall, index) => (
               <ToolComponent
                 key={
@@ -152,11 +152,74 @@ const Reasonings: FC<ReasoningProps> = ({ reasoning }) => (
   </div>
 )
 
-const ToolComponent = memo(({ tools }: ToolCallProps) => (
-  <div className="cursor-default rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-    <p className="font-dmmono uppercase">{tools.tool_name}</p>
-  </div>
-))
+function getArgsSummary(toolName: string, toolArgs: Record<string, string> | null | undefined): string {
+  if (!toolArgs || Object.keys(toolArgs).length === 0) return ''
+  if (toolArgs.file_path) return toolArgs.file_path
+  if (toolArgs.path) return toolArgs.path
+  if (toolArgs.command) return String(toolArgs.command).slice(0, 50)
+  if (toolArgs.pattern) return String(toolArgs.pattern).slice(0, 50)
+  if (toolArgs.query) return String(toolArgs.query).slice(0, 50)
+  const firstVal = Object.values(toolArgs)[0]
+  return firstVal ? String(firstVal).slice(0, 50) : ''
+}
+
+const ToolComponent = memo(({ tools }: ToolCallProps) => {
+  const [expanded, setExpanded] = useState(false)
+  const summary = getArgsSummary(tools.tool_name, tools.tool_args)
+  const hasError = tools.tool_call_error
+  const timing = tools.metrics?.time
+
+  return (
+    <div
+      className={`w-full rounded-md border text-xs font-dmmono overflow-hidden ${
+        hasError ? 'border-red-500/50' : 'border-white/10'
+      }`}
+    >
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
+          hasError ? 'bg-red-950/30 hover:bg-red-950/50' : 'bg-muted/60 hover:bg-white/5'
+        }`}
+      >
+        {hasError && <span className="text-red-400 flex-shrink-0 text-[10px]">✕</span>}
+        <span className={`uppercase flex-shrink-0 ${hasError ? 'text-red-400' : 'text-muted-foreground'}`}>
+          {tools.tool_name}
+        </span>
+        {summary && (
+          <span className="text-primary/50 truncate normal-case">{summary}</span>
+        )}
+        {timing != null && (
+          <span className="ml-auto flex-shrink-0 text-primary/30">
+            {timing >= 1000 ? `${(timing / 1000).toFixed(1)}s` : `${timing}ms`}
+          </span>
+        )}
+        <span className={`flex-shrink-0 text-primary/40 transition-transform ${expanded ? 'rotate-180' : ''} ${timing != null ? '' : 'ml-auto'}`}>
+          ▾
+        </span>
+      </button>
+      {expanded && (
+        <div className="border-t border-white/10 bg-[#111113]">
+          {tools.tool_args && Object.keys(tools.tool_args).length > 0 && (
+            <div className="p-3 border-b border-white/5">
+              <p className="text-primary/40 mb-1 text-[10px] uppercase tracking-wide">Args</p>
+              <pre className="text-[#FAFAFA]/70 text-[11px] overflow-auto whitespace-pre-wrap break-all">
+                {JSON.stringify(tools.tool_args, null, 2)}
+              </pre>
+            </div>
+          )}
+          {tools.content != null && (
+            <div className="p-3">
+              <p className="text-primary/40 mb-1 text-[10px] uppercase tracking-wide">Result</p>
+              <pre className="text-[#FAFAFA]/70 text-[11px] overflow-auto max-h-48 whitespace-pre-wrap break-all">
+                {tools.content}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+})
 ToolComponent.displayName = 'ToolComponent'
 const Messages = ({ messages }: MessageListProps) => {
   if (messages.length === 0) {
