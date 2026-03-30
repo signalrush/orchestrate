@@ -330,6 +330,7 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.TeamRunError ||
         chunk.event === RunEvent.TeamRunCancelled
       ) {
+        setAgentStatus('')
         updateMessagesWithErrorState()
         const errorContent =
           (chunk.content as string) ||
