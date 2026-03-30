@@ -10,7 +10,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS, AUTOS
+from api.server import app, AGENTS, SESSIONS, RUNS
 from orchestrate.core import Auto
 
 
@@ -18,13 +18,16 @@ from orchestrate.core import Auto
 def _reset_state():
     SESSIONS.clear()
     RUNS.clear()
-    AUTOS.clear()
     AGENTS.clear()
     AGENTS["orchestrator"] = {
         "id": "orchestrator",
         "name": "Orchestrate Agent",
         "db_id": "default",
-        "model": {"name": "claude-sonnet-4-6", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+        "model": {
+            "name": "claude-sonnet-4-6",
+            "model": "claude-sonnet-4-6",
+            "provider": "anthropic",
+        },
     }
 
 
@@ -35,6 +38,7 @@ def client():
 
 
 # ---- Auto API mode ----
+
 
 def test_auto_api_mode_init():
     """Auto with api_url stores it for remind-via-HTTP."""
@@ -52,14 +56,18 @@ def test_auto_without_api_url_has_no_api_mode():
 
 # ---- remind via API posts correct data ----
 
+
 @pytest.mark.asyncio
 async def test_remind_via_api_posts_to_endpoint(client):
     """When Auto has api_url, remind() should POST to the API with source=remind."""
     # Seed a session
     sid = "remind-test-session"
     SESSIONS[sid] = {
-        "session_id": sid, "session_name": "Test",
-        "agent_id": "orchestrator", "created_at": 1000, "updated_at": 1000,
+        "session_id": sid,
+        "session_name": "Test",
+        "agent_id": "orchestrator",
+        "created_at": 1000,
+        "updated_at": 1000,
     }
     RUNS[sid] = []
 
@@ -87,8 +95,11 @@ async def test_user_message_has_source_user(client):
     """Normal user messages should have source=user."""
     sid = "user-test-session"
     SESSIONS[sid] = {
-        "session_id": sid, "session_name": "Test",
-        "agent_id": "orchestrator", "created_at": 1000, "updated_at": 1000,
+        "session_id": sid,
+        "session_name": "Test",
+        "agent_id": "orchestrator",
+        "created_at": 1000,
+        "updated_at": 1000,
     }
     RUNS[sid] = []
 
@@ -112,13 +123,34 @@ async def test_session_runs_return_source_field(client):
     """GET /sessions/{id}/runs should include source in each run."""
     sid = "source-field-test"
     SESSIONS[sid] = {
-        "session_id": sid, "session_name": "Test",
-        "agent_id": "orchestrator", "created_at": 1000, "updated_at": 1000,
+        "session_id": sid,
+        "session_name": "Test",
+        "agent_id": "orchestrator",
+        "created_at": 1000,
+        "updated_at": 1000,
     }
     RUNS[sid] = [
-        {"run_input": "hello", "content": "hi", "tools": [], "created_at": 1000, "source": "user"},
-        {"run_input": "remind msg", "content": "ok", "tools": [], "created_at": 1001, "source": "remind"},
-        {"run_input": "another", "content": "sure", "tools": [], "created_at": 1002, "source": "user"},
+        {
+            "run_input": "hello",
+            "content": "hi",
+            "tools": [],
+            "created_at": 1000,
+            "source": "user",
+        },
+        {
+            "run_input": "remind msg",
+            "content": "ok",
+            "tools": [],
+            "created_at": 1001,
+            "source": "remind",
+        },
+        {
+            "run_input": "another",
+            "content": "sure",
+            "tools": [],
+            "created_at": 1002,
+            "source": "user",
+        },
     ]
 
     resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
@@ -131,27 +163,37 @@ async def test_session_runs_return_source_field(client):
 
 # ---- env vars flow ----
 
+
 def test_cli_passes_env_vars_to_auto():
     """orchestrate-run should create Auto with api_url from env vars."""
     from orchestrate.cli import _exec_program
     import tempfile
 
     # Write a test program that checks Auto's api_url
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write("""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(
+            """
 results = []
 async def main(auto):
     results.append(auto._api_url)
     results.append(auto._session_id)
-""")
+"""
+        )
         prog_path = f.name
 
     with tempfile.TemporaryDirectory() as run_dir:
         run_json = Path(run_dir) / "run.json"
-        run_json.write_text(json.dumps({
-            "id": "test", "pid": os.getpid(), "file": prog_path,
-            "start_time": time.time(), "status": "running",
-        }))
+        run_json.write_text(
+            json.dumps(
+                {
+                    "id": "test",
+                    "pid": os.getpid(),
+                    "file": prog_path,
+                    "start_time": time.time(),
+                    "status": "running",
+                }
+            )
+        )
 
         # Set env vars and run
         env_patch = {
@@ -162,8 +204,8 @@ async def main(auto):
             _exec_program(prog_path, "test", run_dir)
 
         # Check the program saw the correct values
-        spec = __import__('importlib').util.spec_from_file_location("check", prog_path)
-        mod = __import__('importlib').util.module_from_spec(spec)
+        spec = __import__("importlib").util.spec_from_file_location("check", prog_path)
+        mod = __import__("importlib").util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         # The module-level results list was populated by main()
         # But since _exec_program imports fresh, we need to check via run.json status

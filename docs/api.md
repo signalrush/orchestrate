@@ -5,10 +5,11 @@ Base URL: `http://localhost:7777`
 ## Architecture
 
 ```
-Browser ←── SSE stream ←── AGENT_SSE queue ←── Worker emits events
+Browser ←── SSE stream ←── TEAM_SSE queue ←── Worker emits events
                                                     ↑
-POST /agents/{name}/runs ──→ AGENT_QUEUES ──→ Worker pulls & processes
-POST /agents/{name}/message ──→ AGENT_QUEUES    (sequential, FIFO)
+POST /agents/{name}/sessions ──→ AGENT_QUEUES ──→ Worker pulls & processes
+POST /agents/{name}/message  ──→ AGENT_QUEUES    (sequential, FIFO)
+POST /agents/{name}/runs     ──→ ephemeral inline execution (no queue)
 ```
 
 The core primitive is an **agent**, identified by name. The server manages one session per agent internally. Each agent has:
@@ -104,7 +105,7 @@ SSE stream of all events emitted by the agent's worker. The stream never termina
 
 ---
 
-### `POST /agents/{agent_name}/runs`
+### `POST /agents/{agent_name}/sessions`
 UI entry point. Creates a session, starts the agent's worker, pushes the message, and returns an SSE stream. The stream never terminates — it stays open for subsequent messages (e.g. program reminds).
 
 **Form fields:**
@@ -134,6 +135,63 @@ UI entry point. Creates a session, starts the agent's worker, pushes the message
 | `RunContent` | Text chunk. If `source` is set, it's a source marker (creates chat bubble). Without `source`, it's accumulated response text. |
 | `ToolCallStarted` | Agent used a tool |
 | `RunError` | Worker encountered an error processing a message |
+
+---
+
+### `POST /agents/{agent_name}/runs`
+Ephemeral task execution. Creates a fresh agent instance (no persistent session), executes the task, and stores the result. Returns immediately with a run ID — execution happens in the background.
+
+**Body (JSON):**
+```json
+{
+  "task": "Summarize the README.md file",
+  "schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
+  "context": ["previous-run-id-1"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `task` | string | yes | The task to execute |
+| `schema` | object | no | JSON schema for structured output; triggers up to 3 retries on validation failure |
+| `context` | array of strings | no | Run IDs whose summaries are prepended as context |
+
+**Response:**
+```json
+{"run_id": "uuid", "status": "ok"}
+```
+
+**SSE events emitted during execution:**
+| Event | Description |
+|-------|-------------|
+| `RunContent` | Accumulated text from the agent |
+| `ToolCallStarted` | Agent used a tool |
+| `RunError` | Execution error |
+| `EphemeralRunCompleted` | Task finished, includes summary |
+
+---
+
+### `GET /runs/{run_id}`
+Retrieve a stored ephemeral run result.
+
+**Response:**
+```json
+{
+  "id": "uuid",
+  "agent": "orchestrator",
+  "task": "Summarize the README.md file",
+  "schema": null,
+  "data": null,
+  "text": "The README describes...",
+  "summary": "A summary of the project's README.",
+  "messages": [],
+  "created_at": 1774641234,
+  "completed_at": 1774641290
+}
+```
+
+**Errors:**
+- `404` — run not found
 
 ---
 
