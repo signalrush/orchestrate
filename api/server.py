@@ -43,12 +43,8 @@ def _db():
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_DB_PATH))
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agents (name TEXT PRIMARY KEY, resume_id TEXT, config TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS session_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, session_id TEXT, source TEXT, input TEXT, content TEXT, tools TEXT, created_at INTEGER)"
-    )
+    conn.execute("CREATE TABLE IF NOT EXISTS agents (name TEXT PRIMARY KEY, resume_id TEXT, config TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, session_id TEXT, source TEXT, input TEXT, content TEXT, tools TEXT, created_at INTEGER)")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS ephemeral_runs (
         id TEXT PRIMARY KEY,
@@ -65,7 +61,6 @@ def _db():
     )
     return conn
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -74,18 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ALL_TOOLS = [
-    "Read",
-    "Edit",
-    "Write",
-    "Bash",
-    "Glob",
-    "Grep",
-    "Agent",
-    "WebSearch",
-    "WebFetch",
-    "Skill",
-]
+ALL_TOOLS = ["Read", "Edit", "Write", "Bash", "Glob", "Grep", "Agent", "WebSearch", "WebFetch", "Skill"]
 
 
 @app.on_event("startup")
@@ -98,9 +82,7 @@ async def load_persisted_agents():
             AGENTS[name] = config
             AGENTS[name]["resume_id"] = row["resume_id"]
     # Rebuild sessions from persisted runs
-    for row in conn.execute(
-        "SELECT DISTINCT agent_name, session_id FROM session_runs"
-    ).fetchall():
+    for row in conn.execute("SELECT DISTINCT agent_name, session_id FROM runs").fetchall():
         sid = row["session_id"]
         if sid and sid not in SESSIONS:
             SESSIONS[sid] = {
@@ -110,10 +92,7 @@ async def load_persisted_agents():
                 "created_at": 0,
                 "updated_at": 0,
             }
-            ts = conn.execute(
-                "SELECT MIN(created_at) as first, MAX(created_at) as last FROM session_runs WHERE session_id = ?",
-                (sid,),
-            ).fetchone()
+            ts = conn.execute("SELECT MIN(created_at) as first, MAX(created_at) as last FROM runs WHERE session_id = ?", (sid,)).fetchone()
             if ts:
                 SESSIONS[sid]["created_at"] = ts["first"] or 0
                 SESSIONS[sid]["updated_at"] = ts["last"] or 0
@@ -130,10 +109,8 @@ async def load_persisted_agents():
             "prompt": "",
         }
         conn = _db()
-        conn.execute(
-            "INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
-            ("orchestrator", None, json.dumps(AGENTS["orchestrator"])),
-        )
+        conn.execute("INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
+                     ("orchestrator", None, json.dumps(AGENTS["orchestrator"])))
         conn.commit()
         conn.close()
 
@@ -152,8 +129,8 @@ RUNS: dict[str, list] = {}
 
 # Agent-keyed stores
 AGENT_QUEUES: dict[str, asyncio.Queue] = {}  # name → input Queue
-TEAM_SSE: asyncio.Queue = asyncio.Queue()  # single team stream
-AGENT_WORKERS: dict[str, asyncio.Task] = {}  # name → Task
+TEAM_SSE: asyncio.Queue = asyncio.Queue()   # single team stream
+AGENT_WORKERS: dict[str, asyncio.Task] = {} # name → Task
 
 
 def _ensure_session(session_id: str, agent_id: str) -> dict:
@@ -174,9 +151,7 @@ def _emit(event: dict):
     TEAM_SSE.put_nowait(json.dumps(event))
 
 
-async def _process_agent_message(
-    message, source, agent_name, session_id, config, resume_id, run_id
-):
+async def _process_agent_message(message, source, agent_name, session_id, config, resume_id, run_id):
     """Run an Agent SDK query for a specific agent. Returns (accumulated_text, resume_id)."""
     accumulated_text = ""
     tools_used = []
@@ -204,25 +179,18 @@ async def _process_agent_message(
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if hasattr(block, "text"):
-                    if (
-                        accumulated_text
-                        and not accumulated_text[-1].isspace()
-                        and block.text
-                        and not block.text[0].isspace()
-                    ):
+                    if accumulated_text and not accumulated_text[-1].isspace() and block.text and not block.text[0].isspace():
                         accumulated_text += " "
                     accumulated_text += block.text
-                    _emit(
-                        {
-                            "event": "RunContent",
-                            "content": accumulated_text,
-                            "content_type": "text/plain",
-                            "agent_name": agent_name,
-                            "session_id": session_id,
-                            "run_id": run_id,
-                            "created_at": int(time.time()),
-                        }
-                    )
+                    _emit({
+                        "event": "RunContent",
+                        "content": accumulated_text,
+                        "content_type": "text/plain",
+                        "agent_name": agent_name,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "created_at": int(time.time()),
+                    })
                 elif hasattr(block, "name"):
                     tool_record = {
                         "role": "tool",
@@ -235,43 +203,29 @@ async def _process_agent_message(
                         "created_at": int(time.time()),
                     }
                     tools_used.append(tool_record)
-                    _emit(
-                        {
-                            "event": "ToolCallStarted",
-                            "tools": [tool_record],
-                            "content_type": "text/plain",
-                            "agent_name": agent_name,
-                            "session_id": session_id,
-                            "run_id": run_id,
-                            "created_at": int(time.time()),
-                        }
-                    )
+                    _emit({
+                        "event": "ToolCallStarted",
+                        "tools": [tool_record],
+                        "content_type": "text/plain",
+                        "agent_name": agent_name,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "created_at": int(time.time()),
+                    })
         elif isinstance(msg, ResultMessage):
             resume_id = msg.session_id
 
     # Store run
-    RUNS.setdefault(session_id, []).append(
-        {
-            "run_input": message,
-            "content": accumulated_text,
-            "tools": tools_used,
-            "created_at": int(time.time()),
-            "source": source,
-        }
-    )
+    RUNS.setdefault(session_id, []).append({
+        "run_input": message,
+        "content": accumulated_text,
+        "tools": tools_used,
+        "created_at": int(time.time()),
+        "source": source,
+    })
     conn = _db()
-    conn.execute(
-        "INSERT INTO session_runs (agent_name, session_id, source, input, content, tools, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            agent_name,
-            session_id,
-            source,
-            message,
-            accumulated_text,
-            json.dumps(tools_used),
-            int(time.time()),
-        ),
-    )
+    conn.execute("INSERT INTO runs (agent_name, session_id, source, input, content, tools, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (agent_name, session_id, source, message, accumulated_text, json.dumps(tools_used), int(time.time())))
     conn.commit()
     conn.close()
     if session_id in SESSIONS:
@@ -299,62 +253,48 @@ async def _agent_worker(agent_name: str):
             session_id = item.get("session_id") or config.get("session_id", agent_name)
 
             # Tell UI this message left the queue
-            _emit(
-                {
-                    "event": "MessageDequeued",
-                    "content": item_message,
-                    "source": item_source,
-                    "agent_name": agent_name,
-                    "session_id": session_id,
-                    "created_at": int(time.time()),
-                }
-            )
+            _emit({
+                "event": "MessageDequeued",
+                "content": item_message,
+                "source": item_source,
+                "agent_name": agent_name,
+                "session_id": session_id,
+                "created_at": int(time.time()),
+            })
 
             # Source marker — UI adds to main messages
-            _emit(
-                {
-                    "event": "RunContent",
-                    "content": item_message,
-                    "content_type": "text/plain",
-                    "source": item_source,
-                    "agent_name": agent_name,
-                    "session_id": session_id,
-                    "run_id": item_run_id,
-                    "created_at": int(time.time()),
-                }
-            )
+            _emit({
+                "event": "RunContent",
+                "content": item_message,
+                "content_type": "text/plain",
+                "source": item_source,
+                "agent_name": agent_name,
+                "session_id": session_id,
+                "run_id": item_run_id,
+                "created_at": int(time.time()),
+            })
 
             # Process sequentially, tracking resume_id locally
             try:
                 response_text, new_resume_id = await _process_agent_message(
-                    item_message,
-                    item_source,
-                    agent_name,
-                    session_id,
-                    config,
-                    resume_id,
-                    item_run_id,
+                    item_message, item_source, agent_name, session_id, config, resume_id, item_run_id
                 )
                 resume_id = new_resume_id
                 conn = _db()
-                conn.execute(
-                    "INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
-                    (agent_name, resume_id, json.dumps(config)),
-                )
+                conn.execute("INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
+                             (agent_name, resume_id, json.dumps(config)))
                 conn.commit()
                 conn.close()
                 if item_future and not item_future.done():
                     item_future.set_result(response_text)
             except Exception as e:
-                _emit(
-                    {
-                        "event": "RunError",
-                        "content": str(e),
-                        "agent_name": agent_name,
-                        "session_id": session_id,
-                        "created_at": int(time.time()),
-                    }
-                )
+                _emit({
+                    "event": "RunError",
+                    "content": str(e),
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                    "created_at": int(time.time()),
+                })
                 if item_future and not item_future.done():
                     item_future.set_exception(e)
 
@@ -375,13 +315,14 @@ def _ensure_agent_worker(agent_name: str):
             SESSIONS[sid]["session_name"] = agent_name
             if agent_name in AGENTS:
                 AGENTS[agent_name]["session_id"] = sid
-        AGENT_WORKERS[agent_name] = asyncio.create_task(_agent_worker(agent_name))
+        AGENT_WORKERS[agent_name] = asyncio.create_task(
+            _agent_worker(agent_name)
+        )
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-
 
 @app.get("/health")
 async def health():
@@ -396,12 +337,10 @@ async def list_teams():
 @app.get("/teams/default/events")
 async def team_events():
     """Persistent SSE stream. All agent events flow here tagged with agent_name."""
-
     async def generate():
         while True:
             event_str = await TEAM_SSE.get()
             yield event_str
-
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -424,23 +363,19 @@ async def register_agent(request: Request):
         "prompt": data.get("prompt", ""),
     }
     conn = _db()
-    conn.execute(
-        "INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
-        (agent_name, None, json.dumps(AGENTS[agent_name])),
-    )
+    conn.execute("INSERT OR REPLACE INTO agents (name, resume_id, config) VALUES (?, ?, ?)",
+                 (agent_name, None, json.dumps(AGENTS[agent_name])))
     conn.commit()
     conn.close()
     # Create worker + session so it appears in sidebar immediately
     _ensure_agent_worker(agent_name)
     # Notify the team SSE stream so UI refreshes sidebar
-    _emit(
-        {
-            "event": "AgentRegistered",
-            "agent_name": agent_name,
-            "session_id": AGENTS[agent_name].get("session_id", ""),
-            "created_at": int(time.time()),
-        }
-    )
+    _emit({
+        "event": "AgentRegistered",
+        "agent_name": agent_name,
+        "session_id": AGENTS[agent_name].get("session_id", ""),
+        "created_at": int(time.time()),
+    })
     return AGENTS[agent_name]
 
 
@@ -466,25 +401,21 @@ async def post_agent_message(
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
-    _emit(
-        {
-            "event": "MessageQueued",
-            "content": message,
-            "source": source,
-            "agent_name": agent_name,
-            "session_id": session_id,
-            "created_at": int(time.time()),
-        }
-    )
+    _emit({
+        "event": "MessageQueued",
+        "content": message,
+        "source": source,
+        "agent_name": agent_name,
+        "session_id": session_id,
+        "created_at": int(time.time()),
+    })
 
-    await AGENT_QUEUES[agent_name].put(
-        {
-            "message": message,
-            "source": source,
-            "future": future,
-            "session_id": session_id,
-        }
-    )
+    await AGENT_QUEUES[agent_name].put({
+        "message": message,
+        "source": source,
+        "future": future,
+        "session_id": session_id,
+    })
 
     result = await future
     return JSONResponse({"content": result, "status": "ok"})
@@ -506,13 +437,13 @@ async def delete_agent(agent_name: str):
         worker.cancel()
     conn = _db()
     conn.execute("DELETE FROM agents WHERE name = ?", (agent_name,))
-    conn.execute("DELETE FROM session_runs WHERE agent_name = ?", (agent_name,))
+    conn.execute("DELETE FROM runs WHERE agent_name = ?", (agent_name,))
     conn.commit()
     conn.close()
     return {"status": "deleted"}
 
 
-@app.post("/agents/{agent_name}/sessions")
+@app.post("/agents/{agent_name}/runs")
 async def run_agent(
     agent_name: str,
     message: str = Form(...),
@@ -531,9 +462,7 @@ async def run_agent(
 
     # Use first message as session name (truncated)
     if SESSIONS[session_id].get("session_name", "").startswith("Session "):
-        SESSIONS[session_id]["session_name"] = (
-            message[:40] + " " + time.strftime("%H:%M")
-        )
+        SESSIONS[session_id]["session_name"] = message[:40] + " " + time.strftime("%H:%M")
 
     run_id = str(uuid.uuid4())
     now = int(time.time())
@@ -542,25 +471,21 @@ async def run_agent(
     _ensure_agent_worker(agent_name)
 
     # Push the initial message to the agent's queue
-    await AGENT_QUEUES[agent_name].put(
-        {
-            "message": message,
-            "source": source,
-            "session_id": session_id,
-        }
-    )
+    await AGENT_QUEUES[agent_name].put({
+        "message": message,
+        "source": source,
+        "session_id": session_id,
+    })
 
     # Emit RunStarted to team stream
-    _emit(
-        {
-            "event": "RunStarted",
-            "session_id": session_id,
-            "run_id": run_id,
-            "agent_name": agent_name,
-            "content_type": "text/plain",
-            "created_at": now,
-        }
-    )
+    _emit({
+        "event": "RunStarted",
+        "session_id": session_id,
+        "run_id": run_id,
+        "agent_name": agent_name,
+        "content_type": "text/plain",
+        "created_at": now,
+    })
 
     # Return the team SSE stream (same as GET /teams/default/events)
     return await team_events()
@@ -683,7 +608,7 @@ async def _execute_ephemeral_run(
                     permission_mode="bypassPermissions",
                     model=model,
                     effort="max",
-                    resume=None,  # always fresh — no resume across retries
+                    resume=None,  # always fresh — never resume for ephemeral runs
                     setting_sources=["user"],
                     cwd=cwd,
                 ),
@@ -699,16 +624,14 @@ async def _execute_ephemeral_run(
                             ):
                                 accumulated_text += " "
                             accumulated_text += block.text
-                            _emit(
-                                {
-                                    "event": "RunContent",
-                                    "content": accumulated_text,
-                                    "content_type": "text/plain",
-                                    "agent_name": agent_name,
-                                    "run_id": run_id,
-                                    "created_at": int(time.time()),
-                                }
-                            )
+                            _emit({
+                                "event": "RunContent",
+                                "content": accumulated_text,
+                                "content_type": "text/plain",
+                                "agent_name": agent_name,
+                                "run_id": run_id,
+                                "created_at": int(time.time()),
+                            })
                             current_messages.append(
                                 {"role": "assistant", "text": block.text}
                             )
@@ -718,15 +641,13 @@ async def _execute_ephemeral_run(
                                 "tool_name": block.name,
                                 "tool_args": getattr(block, "input", {}),
                             }
-                            _emit(
-                                {
-                                    "event": "ToolCallStarted",
-                                    "tools": [tool_record],
-                                    "agent_name": agent_name,
-                                    "run_id": run_id,
-                                    "created_at": int(time.time()),
-                                }
-                            )
+                            _emit({
+                                "event": "ToolCallStarted",
+                                "tools": [tool_record],
+                                "agent_name": agent_name,
+                                "run_id": run_id,
+                                "created_at": int(time.time()),
+                            })
                             current_messages.append(tool_record)
 
             messages.extend(current_messages)
@@ -785,27 +706,23 @@ async def _execute_ephemeral_run(
         conn.commit()
         conn.close()
 
-        _emit(
-            {
-                "event": "EphemeralRunCompleted",
-                "run_id": run_id,
-                "agent_name": agent_name,
-                "summary": summary,
-                "created_at": completed_at,
-            }
-        )
+        _emit({
+            "event": "EphemeralRunCompleted",
+            "run_id": run_id,
+            "agent_name": agent_name,
+            "summary": summary,
+            "created_at": completed_at,
+        })
 
     except Exception as e:
         # Catch-all: emit error and write failed state to DB
-        _emit(
-            {
-                "event": "RunError",
-                "content": str(e),
-                "agent_name": agent_name,
-                "run_id": run_id,
-                "created_at": int(time.time()),
-            }
-        )
+        _emit({
+            "event": "RunError",
+            "content": str(e),
+            "agent_name": agent_name,
+            "run_id": run_id,
+            "created_at": int(time.time()),
+        })
         conn = _db()
         conn.execute(
             "INSERT OR REPLACE INTO ephemeral_runs (id, agent, task, schema, data, text, summary, messages, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -828,7 +745,7 @@ async def _execute_ephemeral_run(
         EPHEMERAL_TASKS.pop(run_id, None)
 
 
-@app.post("/agents/{agent_name}/runs")
+@app.post("/agents/{agent_name}/ephemeral")
 async def ephemeral_run(agent_name: str, request: Request):
     """Ephemeral task execution — fire-and-forget, no persistent session."""
     if agent_name not in AGENTS:
@@ -849,6 +766,19 @@ async def ephemeral_run(agent_name: str, request: Request):
         _execute_ephemeral_run(run_id, agent_name, task, schema, context, config)
     )
     EPHEMERAL_TASKS[run_id] = t
+
+    # Exception callback: emit RunError for any exception that escapes the coroutine
+    def _on_task_done(fut: asyncio.Task, _run_id=run_id, _agent=agent_name):
+        if not fut.cancelled() and fut.exception():
+            _emit({
+                "event": "RunError",
+                "content": str(fut.exception()),
+                "agent_name": _agent,
+                "run_id": _run_id,
+                "created_at": int(time.time()),
+            })
+
+    t.add_done_callback(_on_task_done)
 
     return JSONResponse({"run_id": run_id, "status": "ok"})
 
@@ -881,15 +811,13 @@ async def get_run(run_id: str):
 # Session endpoints
 # ---------------------------------------------------------------------------
 
-
 @app.get("/sessions")
 async def list_sessions(
     session_type: str = Query("agent"),
     component_id: str = Query(""),
 ):
     sessions = [
-        s
-        for s in SESSIONS.values()
+        s for s in SESSIONS.values()
         if not component_id or s.get("agent_id") == component_id
     ]
     sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
@@ -904,21 +832,15 @@ async def get_session_runs(
     runs = RUNS.get(session_id, [])
     if not runs:
         conn = _db()
-        rows = conn.execute(
-            "SELECT * FROM session_runs WHERE session_id = ? ORDER BY created_at",
-            (session_id,),
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at", (session_id,)).fetchall()
         conn.close()
-        runs = [
-            {
-                "run_input": r["input"],
-                "content": r["content"],
-                "tools": json.loads(r["tools"]) if r["tools"] else [],
-                "created_at": r["created_at"],
-                "source": r["source"],
-            }
-            for r in rows
-        ]
+        runs = [{
+            "run_input": r["input"],
+            "content": r["content"],
+            "tools": json.loads(r["tools"]) if r["tools"] else [],
+            "created_at": r["created_at"],
+            "source": r["source"],
+        } for r in rows]
     return runs
 
 
@@ -932,7 +854,6 @@ async def delete_session(session_id: str):
 # ---------------------------------------------------------------------------
 # Backwards-compat: route session message to owning agent
 # ---------------------------------------------------------------------------
-
 
 @app.post("/sessions/{session_id}/message")
 async def post_message(
@@ -955,25 +876,21 @@ async def post_message(
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
-    _emit(
-        {
-            "event": "MessageQueued",
-            "content": message,
-            "source": source,
-            "agent_name": agent_name,
-            "session_id": session_id,
-            "created_at": int(time.time()),
-        }
-    )
+    _emit({
+        "event": "MessageQueued",
+        "content": message,
+        "source": source,
+        "agent_name": agent_name,
+        "session_id": session_id,
+        "created_at": int(time.time()),
+    })
 
-    await AGENT_QUEUES[agent_name].put(
-        {
-            "message": message,
-            "source": source,
-            "future": future,
-            "session_id": session_id,
-        }
-    )
+    await AGENT_QUEUES[agent_name].put({
+        "message": message,
+        "source": source,
+        "future": future,
+        "session_id": session_id,
+    })
 
     result = await future
     return JSONResponse({"content": result, "status": "ok"})
