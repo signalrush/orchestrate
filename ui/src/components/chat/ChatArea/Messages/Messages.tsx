@@ -176,12 +176,12 @@ const EditDiffView = ({ filePath, oldString, newString }: { filePath?: string, o
       )}
       <div className="overflow-auto max-h-64">
         {oldLines.map((line, i) => (
-          <div key={`r-${i}`} style={{ backgroundColor: '#3d1f1f' }} className="px-3 py-0 leading-5 whitespace-pre">
+          <div key={`r-${i}`} style={{ backgroundColor: '#3d1f1f' }} className="px-3 py-0 leading-5 whitespace-pre-wrap">
             <span className="text-red-400 select-none mr-2">-</span>{line}
           </div>
         ))}
         {newLines.map((line, i) => (
-          <div key={`a-${i}`} style={{ backgroundColor: '#1f3d1f' }} className="px-3 py-0 leading-5 whitespace-pre">
+          <div key={`a-${i}`} style={{ backgroundColor: '#1f3d1f' }} className="px-3 py-0 leading-5 whitespace-pre-wrap">
             <span className="text-green-400 select-none mr-2">+</span>{line}
           </div>
         ))}
@@ -226,7 +226,7 @@ const ToolComponent = memo(({ tools }: ToolCallProps) => {
       </button>
       {expanded && (
         <div className="border-t border-white/10 bg-[#111113]">
-          {tools.tool_name === 'Edit' && tools.tool_args?.old_string != null && tools.tool_args?.new_string != null ? (
+          {tools.tool_name.toLowerCase() === 'edit' && tools.tool_args?.old_string != null && tools.tool_args?.new_string != null ? (
             <EditDiffView
               filePath={tools.tool_args.file_path}
               oldString={tools.tool_args.old_string}
