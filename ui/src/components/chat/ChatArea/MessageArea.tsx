@@ -12,6 +12,7 @@ const MessageArea = () => {
   useAIChatStreamHandler()
   const { messages } = useStore()
   const pendingQueue = useStore((state) => state.pendingQueue)
+  const agentStatus = useStore((state) => state.agentStatus)
 
   return (
     <StickToBottom
@@ -22,6 +23,11 @@ const MessageArea = () => {
       <StickToBottom.Content className="flex min-h-full flex-col justify-center">
         <div className="mx-auto w-full max-w-2xl space-y-9 px-4 pb-4">
           <Messages messages={messages} />
+          {agentStatus && (
+            <div className="px-1 py-1">
+              <span className="animate-pulse text-xs text-muted-foreground">{agentStatus}</span>
+            </div>
+          )}
           {pendingQueue.length > 0 && (
             <div className="space-y-2 opacity-50">
               {pendingQueue.map((item, i) => (

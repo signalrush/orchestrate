@@ -58,6 +58,8 @@ interface Store {
   ) => void
   isSessionsLoading: boolean
   setIsSessionsLoading: (isSessionsLoading: boolean) => void
+  agentStatus: string
+  setAgentStatus: (status: string) => void
 }
 
 export const useStore = create<Store>()(
@@ -114,7 +116,9 @@ export const useStore = create<Store>()(
         })),
       isSessionsLoading: false,
       setIsSessionsLoading: (isSessionsLoading) =>
-        set(() => ({ isSessionsLoading }))
+        set(() => ({ isSessionsLoading })),
+      agentStatus: '',
+      setAgentStatus: (agentStatus) => set(() => ({ agentStatus }))
     }),
     {
       name: 'endpoint-storage',

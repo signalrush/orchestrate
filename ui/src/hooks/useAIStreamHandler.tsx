@@ -6,6 +6,30 @@ import { ToolCall } from '@/types/os'
 import { useQueryState } from 'nuqs'
 import { getJsonMarkdown } from '@/lib/utils'
 
+const TOOL_STATUS_MAP: Record<string, (args: Record<string, string>) => string> = {
+  read: (a) => `Reading ${a.file_path || a.path || 'file'}...`,
+  read_file: (a) => `Reading ${a.file_path || a.path || 'file'}...`,
+  write: (a) => `Writing ${a.file_path || a.path || 'file'}...`,
+  write_file: (a) => `Writing ${a.file_path || a.path || 'file'}...`,
+  edit: (a) => `Editing ${a.file_path || a.path || 'file'}...`,
+  edit_file: (a) => `Editing ${a.file_path || a.path || 'file'}...`,
+  bash: () => 'Running bash command...',
+  glob: (a) => `Searching for ${a.pattern || 'files'}...`,
+  grep: (a) => `Searching for ${a.pattern || 'pattern'}...`,
+  web_search: (a) => `Searching the web${a.query ? ` for "${a.query}"` : ''}...`,
+  websearch: (a) => `Searching the web${a.query ? ` for "${a.query}"` : ''}...`,
+  web_fetch: () => 'Fetching web page...',
+  webfetch: () => 'Fetching web page...',
+}
+
+function buildToolStatus(toolName: string, toolArgs: Record<string, string> = {}): string {
+  const key = toolName?.toLowerCase()
+  const fn = TOOL_STATUS_MAP[key]
+  if (fn) return fn(toolArgs)
+  const display = toolName.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  return `${display}...`
+}
+
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
   const [sessionId, setSessionId] = useQueryState('session')
@@ -14,6 +38,7 @@ const useAIChatStreamHandler = () => {
   )
   const setPendingQueue = useStore((state) => state.setPendingQueue)
   const setSessionsData = useStore((state) => state.setSessionsData)
+  const setAgentStatus = useStore((state) => state.setAgentStatus)
 
   const updateMessagesWithErrorState = useCallback(() => {
     setMessages((prevMessages) => {
@@ -147,6 +172,13 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.ToolCallCompleted ||
         chunk.event === RunEvent.TeamToolCallCompleted
       ) {
+        if (
+          chunk.event === RunEvent.ToolCallStarted ||
+          chunk.event === RunEvent.TeamToolCallStarted
+        ) {
+          const tool = chunk.tool
+          if (tool) setAgentStatus(buildToolStatus(tool.tool_name, tool.tool_args))
+        }
         setMessages((prevMessages) => {
           const newMessages = [...prevMessages]
           const lastMessage = newMessages[newMessages.length - 1]
@@ -162,6 +194,7 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.RunContent ||
         chunk.event === RunEvent.TeamRunContent
       ) {
+        setAgentStatus('')
         // Handle source-tagged events: create bubble + agent bubble
         if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
           const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
@@ -314,6 +347,7 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.RunCompleted ||
         chunk.event === RunEvent.TeamRunCompleted
       ) {
+        setAgentStatus('')
         setMessages((prevMessages) => {
           const newMessages = prevMessages.map((message, index) => {
             if (
@@ -367,7 +401,8 @@ const useAIChatStreamHandler = () => {
       sessionId,
       setSessionId,
       processChunkToolCalls,
-      setPendingQueue
+      setPendingQueue,
+      setAgentStatus
     ]
   )
 
