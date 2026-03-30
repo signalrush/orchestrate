@@ -195,6 +195,210 @@ Retrieve a stored ephemeral run result.
 
 ---
 
+## Context Store
+
+### `POST /context`
+Save a context entry.
+
+**Body (JSON):**
+```json
+{
+  "text": "full agent output text",
+  "summary": "one-line summary",
+  "agent": "researcher",
+  "tags": "insight,research",
+  "run_id": "optional-run-uuid"
+}
+```
+
+**Response:**
+```json
+{"id": "uuid", "summary": "one-line summary", "created_at": 1774641234}
+```
+
+---
+
+### `GET /context`
+Search context entries.
+
+**Query params:** `q` (text search), `tags`, `agent`, `pinned` (bool), `limit` (default 50).
+
+**Response:** `{"entries": [<ContextResult>, ...]}`
+
+---
+
+### `POST /context/{id}/pin`
+Pin an entry so it always appears in recall results regardless of query.
+
+**Response:** `{"status": "ok"}`
+
+---
+
+### `DELETE /context/{id}/pin`
+Unpin an entry.
+
+**Response:** `{"status": "ok"}`
+
+---
+
+### `DELETE /context/{id}`
+Delete a context entry and its `.md` file.
+
+**Response:** `{"status": "deleted"}`
+
+---
+
+## SDK — Context
+
+### `ContextResult` object
+
+`ContextResult` is a dict subclass returned by `run()`. Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | str | context entry ID (uuid) |
+| `summary` | str | one-line summary (`__str__` returns this) |
+| `text` | str | full raw agent output |
+| `data` | dict | structured fields (schema runs only), also accessible as dict keys |
+| `agent` | str | agent name that produced it |
+| `task` | str | original instruction |
+| `file` | str | path to `~/.orchestrate/context/{id}.md` |
+
+- `print(result)` prints the summary
+- `result["key"]` accesses schema fields
+- `result.text` accesses full output
+- `result.id` for passing as context to subsequent runs
+
+---
+
+### `run()` — `context` parameter
+
+The existing `run()` method gains a `context` parameter:
+
+```python
+context: list[ContextResult | str] | None = None
+```
+
+When passed, summaries are prepended to the prompt:
+
+```
+[Context from researcher (full output: ~/.orchestrate/context/abc-123.md)]:
+Researcher found 3 key insights about X
+
+<actual instruction here>
+```
+
+Each item can be a `ContextResult` object or a raw context entry ID string.
+
+---
+
+### Auto-save behavior
+
+Every successful `run()` call automatically:
+1. Calls `POST /context` with summary, text, agent, tags, run_id
+2. Writes full output to `~/.orchestrate/context/{id}.md`
+3. Returns a `ContextResult` wrapping all fields
+
+---
+
+### `recall(q="", tags="", agent="", limit=50) → list[ContextResult]`
+
+Search saved context entries. Calls `GET /context` and returns hydrated `ContextResult` objects.
+
+```python
+past = await orch.recall(q="research", tags="insight", agent="researcher", limit=5)
+```
+
+---
+
+### `pin(entry: ContextResult | str) → None`
+
+Pin an entry. Calls `POST /context/{id}/pin`. Pinned entries always appear in recall results.
+
+```python
+await orch.pin(c1)
+```
+
+---
+
+### `unpin(entry: ContextResult | str) → None`
+
+Unpin an entry. Calls `DELETE /context/{id}/pin`.
+
+```python
+await orch.unpin(c1)
+```
+
+---
+
+## Context file layout
+
+```
+~/.orchestrate/context/
+  abc-123.md    # full output from one run
+  def-456.md    # full output from another run
+```
+
+Each file contains:
+
+````markdown
+# Context: {agent} — {task[:60]}
+
+**Agent**: {agent}
+**Created**: {timestamp}
+**Schema**: {schema or "none"}
+
+## Summary
+{summary}
+
+## Full Output
+{text}
+
+## Structured Data
+```json
+{data}
+```
+````
+
+---
+
+## Example: full context flow
+
+```python
+import asyncio
+from core import Orchestrate
+
+async def main():
+    orch = Orchestrate()
+
+    # Step 1: run research agent — result auto-saved to context store
+    c1 = await orch.run(
+        "Research the top 3 Python async frameworks",
+        to="researcher",
+        schema={"findings": "str", "frameworks": "list"}
+    )
+    print(c1)            # prints summary
+    print(c1["findings"]) # access schema field
+
+    # Step 2: pin important result
+    await orch.pin(c1)
+
+    # Step 3: later, recall past research
+    past = await orch.recall(q="async frameworks", limit=5)
+
+    # Step 4: pass recalled context to another agent
+    c2 = await orch.run(
+        "Write a comparison blog post",
+        to="writer",
+        context=past      # summaries prepended to prompt
+    )
+    print(c2.file)        # path to full output markdown
+
+asyncio.run(main())
+```
+
+---
+
 ## Session endpoints
 
 Sessions are managed internally by the server (one per agent). These endpoints let the UI list and reload history.
