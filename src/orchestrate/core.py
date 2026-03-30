@@ -117,8 +117,14 @@ class Orchestrate:
         self._api_url = api_url
         self._client = httpx.AsyncClient(base_url=api_url, timeout=None)
 
-    async def agent(self, name: str, cwd: str | None = None, model: str | None = None,
-                    tools: list | None = None, prompt: str | None = None) -> None:
+    async def agent(
+        self,
+        name: str,
+        cwd: str | None = None,
+        model: str | None = None,
+        tools: list | None = None,
+        prompt: str | None = None,
+    ) -> None:
         """Declare a named agent via POST /agents."""
         config: dict[str, Any] = {"name": name}
         if cwd is not None:
@@ -142,7 +148,9 @@ class Orchestrate:
         """Close the underlying HTTP client."""
         await self._client.aclose()
 
-    async def run(self, instruction: str, to: str = "self", schema: dict | None = None) -> str | dict:
+    async def run(
+        self, instruction: str, to: str = "self", schema: dict | None = None
+    ) -> str | dict:
         """Send instruction to a named agent via POST /agents/{to}/message."""
         max_attempts = 3 if schema else 1
         last_error = None
@@ -154,8 +162,10 @@ class Orchestrate:
                 if attempt == 0:
                     prompt += f"\n\nRespond with a JSON object with these keys and types:\n{schema_desc}"
                 else:
-                    prompt += (f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
-                               f"Keys and types:\n{schema_desc}")
+                    prompt += (
+                        f"\n\nYou MUST respond with ONLY a valid JSON object, no other text. "
+                        f"Keys and types:\n{schema_desc}"
+                    )
 
             resp = await self._client.post(
                 f"/agents/{to}/message",
@@ -163,7 +173,9 @@ class Orchestrate:
             )
             resp.raise_for_status()
             result = resp.json()
-            result_text = result.get("content", "") if isinstance(result, dict) else str(result)
+            result_text = (
+                result.get("content", "") if isinstance(result, dict) else str(result)
+            )
 
             print(f"[{to}] {result_text[:200]}", flush=True)
 
@@ -176,17 +188,61 @@ class Orchestrate:
                 return parsed
             except ValueError as e:
                 last_error = e
-                print(f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}", flush=True)
+                print(
+                    f"[{to}] JSON parse failed (attempt {attempt + 1}/{max_attempts}): {e}",
+                    flush=True,
+                )
 
         if last_error is not None:
             raise last_error
         raise ValueError("Schema parsing failed after all attempts")
 
+    async def run_task(
+        self, task: str, to: str, context: list[str] | None = None
+    ) -> dict:
+        """POST /agents/{to}/runs — ephemeral task execution."""
+        body: dict[str, Any] = {"task": task}
+        if context:
+            body["context"] = context
+        resp = await self._client.post(f"/agents/{to}/runs", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def save_context(self, text: str, tags: list[str] | None = None) -> dict:
+        """POST /context — save a context entry."""
+        body: dict[str, Any] = {"text": text}
+        if tags:
+            body["tags"] = tags
+        resp = await self._client.post("/context", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def recall_context(
+        self,
+        q: str | None = None,
+        tags: str | None = None,
+        agent: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """GET /context — search context entries."""
+        params: dict[str, Any] = {"limit": limit}
+        if q:
+            params["q"] = q
+        if tags:
+            params["tags"] = tags
+        if agent:
+            params["agent"] = agent
+        resp = await self._client.get("/context", params=params)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+
     async def remind(self, instruction: str, schema: dict | None = None) -> str | dict:
         """Deprecated. Use run() instead."""
         return await self.run(instruction, schema=schema)
 
-    async def task(self, instruction: str, to: str, schema: dict | None = None) -> str | dict:
+    async def task(
+        self, instruction: str, to: str, schema: dict | None = None
+    ) -> str | dict:
         """Deprecated. Use run(instruction, to=...) instead."""
         return await self.run(instruction, to=to, schema=schema)
 
