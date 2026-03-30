@@ -596,8 +596,9 @@ async def pin_context(entry_id: int):
     conn = _db()
     cur = conn.execute("UPDATE context_entries SET pinned = 1 WHERE id = ?", (entry_id,))
     conn.commit()
+    rowcount = cur.rowcount
     conn.close()
-    if cur.rowcount == 0:
+    if rowcount == 0:
         return JSONResponse({"error": "not found"}, status_code=404)
     return {"status": "ok"}
 
@@ -607,10 +608,23 @@ async def unpin_context(entry_id: int):
     conn = _db()
     cur = conn.execute("UPDATE context_entries SET pinned = 0 WHERE id = ?", (entry_id,))
     conn.commit()
+    rowcount = cur.rowcount
     conn.close()
-    if cur.rowcount == 0:
+    if rowcount == 0:
         return JSONResponse({"error": "not found"}, status_code=404)
     return {"status": "ok"}
+
+
+@app.delete("/context/{entry_id}")
+async def delete_context(entry_id: int):
+    conn = _db()
+    cur = conn.execute("DELETE FROM context_entries WHERE id = ?", (entry_id,))
+    conn.commit()
+    rowcount = cur.rowcount
+    conn.close()
+    if rowcount == 0:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"status": "deleted"}
 
 # ---------------------------------------------------------------------------
 # Backwards-compat: route session message to owning agent
