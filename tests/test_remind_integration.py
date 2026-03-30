@@ -10,7 +10,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS, AUTOS
+from api.server import app, AGENTS, SESSIONS, RUNS
 from orchestrate.core import Auto
 
 
@@ -18,7 +18,6 @@ from orchestrate.core import Auto
 def _reset_state():
     SESSIONS.clear()
     RUNS.clear()
-    AUTOS.clear()
     AGENTS.clear()
     AGENTS["orchestrator"] = {
         "id": "orchestrator",

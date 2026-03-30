@@ -3,7 +3,7 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS, AUTOS
+from api.server import app, AGENTS, SESSIONS, RUNS
 
 
 @pytest.fixture(autouse=True)
@@ -11,7 +11,10 @@ def _reset_state():
     """Reset in-memory stores between tests."""
     SESSIONS.clear()
     RUNS.clear()
-    AUTOS.clear()
+    conn = __import__('api.server', fromlist=['_db'])._db()
+    conn.execute("DELETE FROM context_entries")
+    conn.commit()
+    conn.close()
     # Restore default agent
     AGENTS.clear()
     AGENTS["orchestrator"] = {
@@ -155,3 +158,105 @@ async def test_run_stores_source_field(client):
     runs = resp.json()
     assert runs[0]["source"] == "user"
     assert runs[1]["source"] == "remind"
+
+
+# ---- context endpoints ----
+
+@pytest.mark.asyncio
+async def test_save_and_search_context(client):
+    """POST /context saves entry, GET /context retrieves it."""
+    resp = await client.post("/context", json={"text": "hello world", "tags": ["test"], "agent": "bot"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "id" in body
+    assert "created_at" in body
+
+    resp = await client.get("/context", params={"q": "hello"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) >= 1
+    assert data[0]["text"] == "hello world"
+    assert data[0]["agent"] == "bot"
+    assert data[0]["tags"] == ["test"]
+
+
+@pytest.mark.asyncio
+async def test_context_empty_text_rejected(client):
+    """POST /context with empty text returns 400."""
+    resp = await client.post("/context", json={"text": ""})
+    assert resp.status_code == 400
+
+    resp = await client.post("/context", json={"tags": ["foo"]})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_context_search_by_tags_exact(client):
+    """Tag search uses exact match, not substring."""
+    await client.post("/context", json={"text": "entry with alpha", "tags": ["alpha"]})
+    await client.post("/context", json={"text": "entry with alphabet", "tags": ["alphabet"]})
+
+    resp = await client.get("/context", params={"tags": "alpha"})
+    data = resp.json()["data"]
+    assert len(data) == 1
+    assert data[0]["text"] == "entry with alpha"
+
+
+@pytest.mark.asyncio
+async def test_context_search_by_agent(client):
+    await client.post("/context", json={"text": "agent entry", "agent": "worker1"})
+    resp = await client.get("/context", params={"agent": "worker1"})
+    data = resp.json()["data"]
+    assert len(data) >= 1
+    assert data[0]["agent"] == "worker1"
+
+
+@pytest.mark.asyncio
+async def test_context_pin_unpin(client):
+    resp = await client.post("/context", json={"text": "pin me"})
+    entry_id = resp.json()["id"]
+
+    resp = await client.post(f"/context/{entry_id}/pin")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify pinned
+    resp = await client.get("/context", params={"q": "pin me"})
+    assert resp.json()["data"][0]["pinned"] == 1
+
+    resp = await client.delete(f"/context/{entry_id}/pin")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify unpinned
+    resp = await client.get("/context", params={"q": "pin me"})
+    assert resp.json()["data"][0]["pinned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_context_pin_nonexistent_returns_404(client):
+    resp = await client.post("/context/99999/pin")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_context_unpin_nonexistent_returns_404(client):
+    resp = await client.delete("/context/99999/pin")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_context_tags_returned_as_list(client):
+    """Tags should be deserialized as JSON array, not raw string."""
+    await client.post("/context", json={"text": "tagged", "tags": ["a", "b"]})
+    resp = await client.get("/context", params={"q": "tagged"})
+    data = resp.json()["data"]
+    assert isinstance(data[0]["tags"], list)
+    assert data[0]["tags"] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_context_empty_search(client):
+    resp = await client.get("/context")
+    assert resp.status_code == 200
+    assert "data" in resp.json()
