@@ -68,6 +68,11 @@ def _db():
     run_id TEXT,
     created_at INTEGER
 )""")
+    try:
+        conn.execute("ALTER TABLE context_entries ADD COLUMN summary TEXT")
+        conn.commit()
+    except Exception:
+        pass
     return conn
 
 app.add_middleware(
@@ -874,16 +879,17 @@ async def save_context(request: Request):
     tags = json.dumps(data.get("tags", []))
     agent = data.get("agent", "")
     run_id = data.get("run_id")
+    summary = data.get("summary") or await _summarize(text)
     now = int(time.time())
     conn = _db()
     cur = conn.execute(
-        "INSERT INTO context_entries (text, agent, tags, run_id, created_at) VALUES (?, ?, ?, ?, ?)",
-        (text, agent, tags, run_id, now),
+        "INSERT INTO context_entries (text, agent, tags, run_id, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (text, agent, tags, run_id, summary, now),
     )
     entry_id = cur.lastrowid
     conn.commit()
     conn.close()
-    return {"id": entry_id, "created_at": now}
+    return {"id": entry_id, "summary": summary, "created_at": now}
 
 
 @app.get("/context")
@@ -911,7 +917,7 @@ async def search_context(
     where = " AND ".join(clauses)
     sql = "SELECT * FROM context_entries"
     if where:
-        sql += f" WHERE {where}"
+        sql += f" WHERE pinned = 1 OR ({where})"
     sql += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
@@ -922,6 +928,18 @@ async def search_context(
         entry["tags"] = json.loads(entry["tags"]) if entry["tags"] else []
         data.append(entry)
     return {"data": data}
+
+
+@app.get("/context/{entry_id}")
+async def get_context(entry_id: int):
+    conn = _db()
+    row = conn.execute("SELECT * FROM context_entries WHERE id = ?", (entry_id,)).fetchone()
+    conn.close()
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    entry = dict(row)
+    entry["tags"] = json.loads(entry["tags"]) if entry["tags"] else []
+    return entry
 
 
 @app.post("/context/{entry_id}/pin")
