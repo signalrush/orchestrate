@@ -63,13 +63,13 @@ async def test_agents_have_required_fields(client):
 
 
 @pytest.mark.asyncio
-async def test_registered_agent_has_db_id(client):
-    """Dynamically registered agents must also include db_id."""
+async def test_registered_agent_has_name(client):
+    """Dynamically registered agents must include name and id."""
     resp = await client.post("/agents", json={"name": "test-agent"})
     assert resp.status_code == 200
     agent = resp.json()
-    assert "db_id" in agent
-    assert agent["db_id"]
+    assert agent["name"] == "test-agent"
+    assert agent["id"] == "test-agent"
 
 
 # ---- session endpoints ----
@@ -212,3 +212,134 @@ async def test_session_endpoint_renamed(client):
     routes = [r.path for r in app.routes if isinstance(r, APIRoute)]
     assert "/agents/{agent_name}/sessions" in routes
     assert "/agents/{agent_name}/runs" in routes  # new ephemeral endpoint
+
+
+# ---- context endpoints ----
+
+
+@pytest.mark.asyncio
+async def test_save_and_search_context(client):
+    """POST /context saves entry, GET /context retrieves it."""
+    resp = await client.post(
+        "/context", json={"text": "hello world", "tags": ["test"], "agent": "bot"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "id" in body
+    assert "created_at" in body
+
+    resp = await client.get("/context", params={"q": "hello"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) >= 1
+    assert data[0]["text"] == "hello world"
+    assert data[0]["summary"] == "hello world"
+    assert data[0]["agent"] == "bot"
+
+
+@pytest.mark.asyncio
+async def test_context_search_by_tags(client):
+    await client.post(
+        "/context", json={"text": "tagged entry", "tags": ["alpha", "beta"]}
+    )
+    resp = await client.get("/context", params={"tags": "alpha"})
+    data = resp.json()["data"]
+    assert len(data) >= 1
+    assert data[0]["text"] == "tagged entry"
+
+
+@pytest.mark.asyncio
+async def test_context_search_by_agent(client):
+    await client.post("/context", json={"text": "agent entry", "agent": "worker1"})
+    resp = await client.get("/context", params={"agent": "worker1"})
+    data = resp.json()["data"]
+    assert len(data) >= 1
+    assert data[0]["agent"] == "worker1"
+
+
+@pytest.mark.asyncio
+async def test_context_pin_unpin(client):
+    resp = await client.post("/context", json={"text": "pin me"})
+    entry_id = resp.json()["id"]
+
+    resp = await client.post(f"/context/{entry_id}/pin")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify pinned
+    resp = await client.get("/context", params={"q": "pin me"})
+    assert resp.json()["data"][0]["pinned"] == 1
+
+    resp = await client.delete(f"/context/{entry_id}/pin")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify unpinned
+    resp = await client.get("/context", params={"q": "pin me"})
+    assert resp.json()["data"][0]["pinned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_context_summary_truncated(client):
+    long_text = "x" * 500
+    resp = await client.post("/context", json={"text": long_text})
+    entry_id = resp.json()["id"]
+    resp = await client.get("/context", params={"q": "xxx"})
+    data = resp.json()["data"]
+    assert len(data[0]["summary"]) == 200
+
+
+@pytest.mark.asyncio
+async def test_context_empty_search(client):
+    resp = await client.get("/context")
+    assert resp.status_code == 200
+    assert "data" in resp.json()
+
+
+# ---- L3 glue tests ----
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_run_accepts_context_parameter(client):
+    """POST /agents/{name}/runs accepts optional context list."""
+    resp = await client.post(
+        "/agents/orchestrator/runs",
+        json={"task": "hello", "context": ["run-id-1", "run-id-2"]},
+    )
+    # Returns run_id immediately (background task), not 400
+    assert resp.status_code == 200
+    assert "run_id" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_run_returns_run_id(client):
+    """POST /agents/{name}/runs returns a run_id for polling."""
+    resp = await client.post("/agents/orchestrator/runs", json={"task": "do something"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "run_id" in body
+    assert body["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_context_auto_save_fields(client):
+    """POST /context stores all required L3 fields including run_id."""
+    resp = await client.post(
+        "/context",
+        json={
+            "text": "result text",
+            "agent": "worker",
+            "task": "do work",
+            "run_id": "abc-123",
+        },
+    )
+    assert resp.status_code == 200
+    entry_id = resp.json()["id"]
+
+    resp = await client.get("/context", params={"q": "result text"})
+    data = resp.json()["data"]
+    assert len(data) >= 1
+    entry = data[0]
+    assert entry["agent"] == "worker"
+    assert entry["task"] == "do work"
+    assert entry["run_id"] == "abc-123"

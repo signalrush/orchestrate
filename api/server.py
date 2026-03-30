@@ -63,6 +63,19 @@ def _db():
         completed_at INTEGER
     )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS context_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT,
+    summary TEXT,
+    agent TEXT,
+    task TEXT,
+    tags TEXT,
+    pinned INTEGER DEFAULT 0,
+    run_id TEXT,
+    created_at INTEGER
+)"""
+    )
     return conn
 
 
@@ -619,6 +632,7 @@ async def _execute_ephemeral_run(
     # Prepend context from previous runs if requested
     prompt = task
     if context_ids:
+        summaries = []
         conn = _db()
         for cid in context_ids:
             row = conn.execute(
@@ -627,8 +641,13 @@ async def _execute_ephemeral_run(
             if row:
                 ctx = row["summary"] or row["text"] or ""
                 if ctx:
-                    prompt = f"[Context from run {cid}]: {ctx}\n\n{prompt}"
+                    summaries.append(ctx)
         conn.close()
+        if summaries:
+            context_block = "Context from previous runs:\n" + "\n".join(
+                f"- {s}" for s in summaries
+            )
+            prompt = f"{context_block}\n\nTask: {task}"
 
     # Schema instruction
     if schema:
@@ -766,6 +785,11 @@ async def _execute_ephemeral_run(
         ),
     )
     conn.commit()
+    conn.execute(
+        "INSERT INTO context_entries (text, summary, agent, task, tags, pinned, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (accumulated_text, summary, agent_name, task, "[]", 0, run_id, completed_at),
+    )
+    conn.commit()
     conn.close()
 
     _emit(
@@ -875,6 +899,81 @@ async def delete_session(session_id: str):
     SESSIONS.pop(session_id, None)
     RUNS.pop(session_id, None)
     return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Context endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/context")
+async def save_context(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
+    summary = text[:200]
+    tags = json.dumps(data.get("tags", []))
+    agent = data.get("agent", "")
+    task = data.get("task", "")
+    run_id = data.get("run_id")
+    now = int(time.time())
+    conn = _db()
+    cur = conn.execute(
+        "INSERT INTO context_entries (text, summary, agent, task, tags, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (text, summary, agent, task, tags, run_id, now),
+    )
+    entry_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return {"id": entry_id, "created_at": now}
+
+
+@app.get("/context")
+async def search_context(
+    q: str = Query(""),
+    tags: str = Query(""),
+    agent: str = Query(""),
+    limit: int = Query(50),
+):
+    conn = _db()
+    clauses: list[str] = []
+    params: list[str | int] = []
+    if q:
+        clauses.append("(text LIKE ? OR summary LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    if tags:
+        for tag in tags.split(","):
+            clauses.append("tags LIKE ?")
+            params.append(f"%{tag.strip()}%")
+    if agent:
+        clauses.append("agent = ?")
+        params.append(agent)
+    where = " AND ".join(clauses)
+    sql = "SELECT * FROM context_entries"
+    if where:
+        sql += f" WHERE {where}"
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return {"data": [dict(r) for r in rows]}
+
+
+@app.post("/context/{entry_id}/pin")
+async def pin_context(entry_id: int):
+    conn = _db()
+    conn.execute("UPDATE context_entries SET pinned = 1 WHERE id = ?", (entry_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.delete("/context/{entry_id}/pin")
+async def unpin_context(entry_id: int):
+    conn = _db()
+    conn.execute("UPDATE context_entries SET pinned = 0 WHERE id = ?", (entry_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
