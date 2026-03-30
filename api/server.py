@@ -143,7 +143,7 @@ RUNS: dict[str, list] = {}
 
 # Agent-keyed stores
 AGENT_QUEUES: dict[str, asyncio.Queue] = {}  # name → input Queue
-TEAM_SSE: asyncio.Queue = asyncio.Queue()   # single team stream
+TEAM_SSE_SUBSCRIBERS: list[asyncio.Queue] = []  # fan-out: one queue per SSE reader
 AGENT_WORKERS: dict[str, asyncio.Task] = {} # name → Task
 
 
@@ -161,8 +161,10 @@ def _ensure_session(session_id: str, agent_id: str) -> dict:
 
 
 def _emit(event: dict):
-    """Push event to the team SSE stream."""
-    TEAM_SSE.put_nowait(json.dumps(event))
+    """Push event to all SSE subscribers."""
+    data = json.dumps(event)
+    for q in TEAM_SSE_SUBSCRIBERS:
+        q.put_nowait(data)
 
 
 async def _process_agent_message(message, source, agent_name, session_id, config, resume_id, run_id):
@@ -350,11 +352,16 @@ async def list_teams():
 
 @app.get("/teams/default/events")
 async def team_events():
-    """Persistent SSE stream. All agent events flow here tagged with agent_name."""
+    """Persistent SSE stream. Each connection gets its own subscriber queue (fan-out)."""
+    q: asyncio.Queue = asyncio.Queue()
+    TEAM_SSE_SUBSCRIBERS.append(q)
     async def generate():
-        while True:
-            event_str = await TEAM_SSE.get()
-            yield event_str
+        try:
+            while True:
+                event_str = await q.get()
+                yield event_str + '\n'
+        finally:
+            TEAM_SSE_SUBSCRIBERS.remove(q)
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -437,8 +444,8 @@ async def post_agent_message(
 
 @app.get("/agents/{agent_name}/events")
 async def agent_events(agent_name: str):
-    """Redirect to team events stream."""
-    return await team_events()
+    """Deprecated — use GET /teams/default/events instead."""
+    return JSONResponse({"error": "Use GET /teams/default/events"}, status_code=301)
 
 
 @app.delete("/agents/{agent_name}")
@@ -501,8 +508,8 @@ async def run_agent(
         "created_at": now,
     })
 
-    # Return the team SSE stream (same as GET /teams/default/events)
-    return await team_events()
+    # Return session info — events come via GET /teams/default/events
+    return JSONResponse({"session_id": session_id, "run_id": run_id, "status": "ok"})
 
 
 # ---------------------------------------------------------------------------
