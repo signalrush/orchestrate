@@ -163,6 +163,33 @@ function getArgsSummary(toolName: string, toolArgs: Record<string, string> | nul
   return firstVal ? String(firstVal).slice(0, 50) : ''
 }
 
+const EditDiffView = ({ filePath, oldString, newString }: { filePath?: string, oldString: string, newString: string }) => {
+  const oldLines = oldString.split('\n')
+  const newLines = newString.split('\n')
+
+  return (
+    <div className="font-dmmono text-[11px]">
+      {filePath && (
+        <div className="px-3 py-1.5 text-primary/40 text-[10px] uppercase tracking-wide border-b border-white/5">
+          {filePath}
+        </div>
+      )}
+      <div className="overflow-auto max-h-64">
+        {oldLines.map((line, i) => (
+          <div key={`r-${i}`} style={{ backgroundColor: '#3d1f1f' }} className="px-3 py-0 leading-5 whitespace-pre">
+            <span className="text-red-400 select-none mr-2">-</span>{line}
+          </div>
+        ))}
+        {newLines.map((line, i) => (
+          <div key={`a-${i}`} style={{ backgroundColor: '#1f3d1f' }} className="px-3 py-0 leading-5 whitespace-pre">
+            <span className="text-green-400 select-none mr-2">+</span>{line}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 const ToolComponent = memo(({ tools }: ToolCallProps) => {
   const [expanded, setExpanded] = useState(false)
   const summary = getArgsSummary(tools.tool_name, tools.tool_args)
@@ -199,13 +226,21 @@ const ToolComponent = memo(({ tools }: ToolCallProps) => {
       </button>
       {expanded && (
         <div className="border-t border-white/10 bg-[#111113]">
-          {tools.tool_args && Object.keys(tools.tool_args).length > 0 && (
-            <div className="p-3 border-b border-white/5">
-              <p className="text-primary/40 mb-1 text-[10px] uppercase tracking-wide">Args</p>
-              <pre className="text-[#FAFAFA]/70 text-[11px] overflow-auto whitespace-pre-wrap break-all">
-                {JSON.stringify(tools.tool_args, null, 2)}
-              </pre>
-            </div>
+          {tools.tool_name === 'Edit' && tools.tool_args?.old_string != null && tools.tool_args?.new_string != null ? (
+            <EditDiffView
+              filePath={tools.tool_args.file_path}
+              oldString={tools.tool_args.old_string}
+              newString={tools.tool_args.new_string}
+            />
+          ) : (
+            tools.tool_args && Object.keys(tools.tool_args).length > 0 && (
+              <div className="p-3 border-b border-white/5">
+                <p className="text-primary/40 mb-1 text-[10px] uppercase tracking-wide">Args</p>
+                <pre className="text-[#FAFAFA]/70 text-[11px] overflow-auto whitespace-pre-wrap break-all">
+                  {JSON.stringify(tools.tool_args, null, 2)}
+                </pre>
+              </div>
+            )
           )}
           {tools.content != null && (
             <div className="p-3">
