@@ -1,5 +1,9 @@
 import { useCallback, useRef } from 'react'
-import { getSessionAPI, getAllSessionsAPI } from '@/api/os'
+import { getSessionAPI, getAllSessionsAPI, getSessionEventsAPI } from '@/api/os'
+
+// Module-level: survives remounts and is shared across all hook instances
+const _sessionLastSeq: Record<string, number> = {}
+const _sessionMessages: Record<string, ChatMessage[]> = {}
 import { useStore } from '../store'
 import { toast } from 'sonner'
 import { ChatMessage, ToolCall, ReasoningMessage, ChatEntry } from '@/types/os'
@@ -76,6 +80,69 @@ const useSessionLoader = () => {
       const requestId = getSessionCounterRef.current
 
       try {
+        // Try events endpoint first (preferred path)
+        let events: Array<Record<string, unknown>> = []
+        try {
+          const after = _sessionLastSeq[sessionId] ?? 0
+          events = await getSessionEventsAPI(selectedEndpoint, sessionId, after, authToken)
+        } catch {
+          // ignore — fall through to runs-based loading
+        }
+
+        if (requestId !== getSessionCounterRef.current) return null
+
+        if (events.length > 0) {
+          // Track lastSeq for this session
+          const lastEvent = events[events.length - 1]
+          _sessionLastSeq[sessionId] = (lastEvent.seq as number) ?? _sessionLastSeq[sessionId] ?? 0
+
+          // Start from cached messages when fetching incrementally (after > 0)
+          const msgs: ChatMessage[] = after > 0 ? [...(_sessionMessages[sessionId] ?? [])] : []
+          for (const event of events) {
+            const evt = event.event as string
+            if (evt === 'RunContent') {
+              const source = event.source as string | undefined
+              if (source === 'user' || source === 'system' || source === 'remind') {
+                const role = (source === 'system' || source === 'remind') ? 'remind' : 'user'
+                msgs.push({
+                  role: role as 'remind' | 'user',
+                  content: (event.content as string) ?? '',
+                  created_at: (event.created_at as number) ?? 0
+                })
+                msgs.push({
+                  role: 'agent',
+                  content: '',
+                  tool_calls: [],
+                  created_at: ((event.created_at as number) ?? 0) + 1
+                })
+              } else {
+                const last = msgs[msgs.length - 1]
+                if (last?.role === 'agent') {
+                  // Each RunContent carries the full accumulated text — just set it
+                  msgs[msgs.length - 1] = { ...last, content: (event.content as string) || '' }
+                }
+              }
+            } else if (evt === 'ToolCallStarted') {
+              const last = msgs[msgs.length - 1]
+              const tools = (event.tools as ToolCall[]) || []
+              if (last?.role === 'agent' && tools.length > 0) {
+                msgs[msgs.length - 1] = {
+                  ...last,
+                  tool_calls: [...(last.tool_calls || []), ...tools]
+                }
+              }
+            }
+          }
+
+          _sessionMessages[sessionId] = msgs
+          setMessages(msgs)
+          return msgs
+        }
+
+        // Already loaded this session before and caught up — no new events, no update needed
+        if ((_sessionLastSeq[sessionId] ?? 0) > 0) return null
+
+        // Fallback: runs-based loading for old sessions without events
         const response: SessionResponse = await getSessionAPI(
           selectedEndpoint,
           entityType,
@@ -83,7 +150,6 @@ const useSessionLoader = () => {
           dbId ?? '',
           authToken
         )
-        // Discard stale responses from superseded requests
         if (requestId !== getSessionCounterRef.current) return null
         if (response) {
           if (Array.isArray(response)) {

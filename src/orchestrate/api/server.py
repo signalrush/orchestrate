@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Form, Request, Query
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -119,6 +121,13 @@ def _db():
         conn.commit()
     except Exception:
         pass
+    conn.execute("""CREATE TABLE IF NOT EXISTS session_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        data TEXT,
+        created_at INTEGER
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_session_events_sid_seq ON session_events(session_id, seq)")
     return conn
 
 app.add_middleware(
@@ -141,7 +150,7 @@ async def load_persisted_agents():
         if name not in AGENTS:
             AGENTS[name] = config
             AGENTS[name]["resume_id"] = row["resume_id"]
-    # Rebuild sessions from persisted runs
+    # Rebuild sessions from persisted runs (pre-migration)
     for row in conn.execute("SELECT DISTINCT agent_name, session_id FROM runs").fetchall():
         sid = row["session_id"]
         if sid and sid not in SESSIONS:
@@ -156,6 +165,21 @@ async def load_persisted_agents():
             if ts:
                 SESSIONS[sid]["created_at"] = ts["first"] or 0
                 SESSIONS[sid]["updated_at"] = ts["last"] or 0
+    # Rebuild sessions from session_events (post-migration)
+    for row in conn.execute(
+        "SELECT session_id, MIN(created_at) as first, MAX(created_at) as last, "
+        "MAX(json_extract(data, '$.agent_name')) as agent_name "
+        "FROM session_events GROUP BY session_id"
+    ).fetchall():
+        sid = row["session_id"]
+        if sid and sid not in SESSIONS:
+            SESSIONS[sid] = {
+                "session_id": sid,
+                "session_name": row["agent_name"] or sid,
+                "agent_id": "orchestrator",
+                "created_at": row["first"] or 0,
+                "updated_at": row["last"] or 0,
+            }
     conn.close()
 
     # Register default orchestrator agent if not loaded from DB
@@ -185,7 +209,6 @@ AGENTS: dict[str, dict] = {}
 # "self" is aliased to "orchestrator" in post_agent_message
 
 SESSIONS: dict[str, dict] = {}
-RUNS: dict[str, list] = {}
 
 # Agent-keyed stores
 AGENT_QUEUES: dict[str, asyncio.Queue] = {}  # name → input Queue
@@ -202,13 +225,33 @@ def _ensure_session(session_id: str, agent_id: str) -> dict:
             "created_at": int(time.time()),
             "updated_at": int(time.time()),
         }
-        RUNS[session_id] = []
     return SESSIONS[session_id]
+
+
+def _persist_session_event(session_id: str, data: str) -> None:
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_DB_PATH))
+    conn.execute(
+        "INSERT INTO session_events (session_id, data, created_at) VALUES (?, ?, ?)",
+        (session_id, data, int(time.time()))
+    )
+    conn.commit()
+    conn.close()
 
 
 def _emit(event: dict):
     """Push event to all SSE subscribers."""
     data = json.dumps(event)
+    session_id = event.get("session_id")
+    if session_id:
+        try:
+            loop = asyncio.get_running_loop()
+            fut = loop.run_in_executor(None, _persist_session_event, session_id, data)
+            fut.add_done_callback(
+                lambda f: f.exception() and print(f"[warn] session_events persist failed: {f.exception()}")
+            )
+        except RuntimeError:
+            _persist_session_event(session_id, data)
     for q in TEAM_SSE_SUBSCRIBERS:
         q.put_nowait(data)
 
@@ -217,7 +260,9 @@ async def _process_agent_message(message, source, agent_name, session_id, config
     """Run an Agent SDK query for a specific agent. Returns (accumulated_text, resume_id)."""
     accumulated_text = ""
     tools_used = []
-    model = config.get("model", "claude-sonnet-4-6")
+    model = config.get("model", DEFAULT_MODEL)
+    if model == "inherit":
+        model = DEFAULT_MODEL
     cwd = config.get("cwd", os.getcwd())
     tools = config.get("tools", ALL_TOOLS)
 
@@ -295,19 +340,6 @@ async def _process_agent_message(message, source, agent_name, session_id, config
         elif isinstance(msg, ResultMessage):
             resume_id = msg.session_id
 
-    # Store run
-    RUNS.setdefault(session_id, []).append({
-        "run_input": message,
-        "content": accumulated_text,
-        "tools": tools_used,
-        "created_at": int(time.time()),
-        "source": source,
-    })
-    conn = _db()
-    conn.execute("INSERT INTO runs (agent_name, session_id, source, input, content, tools, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 (agent_name, session_id, source, message, accumulated_text, json.dumps(tools_used), int(time.time())))
-    conn.commit()
-    conn.close()
     if session_id in SESSIONS:
         SESSIONS[session_id]["updated_at"] = int(time.time())
 
@@ -571,6 +603,15 @@ async def delete_agent(agent_name: str):
         worker.cancel()
     conn = _db()
     conn.execute("DELETE FROM agents WHERE name = ?", (agent_name,))
+    conn.execute(
+        "DELETE FROM session_events WHERE session_id IN "
+        "(SELECT DISTINCT session_id FROM runs WHERE agent_name = ?)",
+        (agent_name,)
+    )
+    conn.execute(
+        "DELETE FROM session_events WHERE json_extract(data, '$.agent_name') = ?",
+        (agent_name,)
+    )
     conn.execute("DELETE FROM runs WHERE agent_name = ?", (agent_name,))
     conn.commit()
     conn.close()
@@ -742,7 +783,9 @@ async def _execute_ephemeral_run(
     now = int(time.time())
 
     try:
-        model = config.get("model", "claude-sonnet-4-6")
+        model = config.get("model", DEFAULT_MODEL)
+        if model == "inherit":
+            model = DEFAULT_MODEL
         cwd = config.get("cwd", os.getcwd())
         tools = config.get("tools", ALL_TOOLS)
         messages: list[dict[str, Any]] = []
@@ -1016,30 +1059,81 @@ async def list_sessions(
     return {"data": sessions}
 
 
+@app.get("/sessions/{session_id}/events")
+async def get_session_events(session_id: str, after: int = Query(0)):
+    conn = _db()
+    rows = conn.execute(
+        "SELECT seq, data FROM session_events WHERE session_id=? AND seq>? ORDER BY seq",
+        (session_id, after)
+    ).fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        event = json.loads(row["data"])
+        event["seq"] = row["seq"]
+        result.append(event)
+    return result
+
+
 @app.get("/sessions/{session_id}/runs")
 async def get_session_runs(
     session_id: str,
     session_type: str = Query("agent"),
 ):
-    runs = RUNS.get(session_id, [])
-    if not runs:
-        conn = _db()
-        rows = conn.execute("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at", (session_id,)).fetchall()
+    conn = _db()
+    rows = conn.execute(
+        "SELECT seq, data FROM session_events WHERE session_id=? ORDER BY seq",
+        (session_id,)
+    ).fetchall()
+    if not rows:
+        # Fall back to runs table for pre-migration sessions
+        db_rows = conn.execute(
+            "SELECT * FROM runs WHERE session_id=? ORDER BY created_at", (session_id,)
+        ).fetchall()
         conn.close()
-        runs = [{
+        return [{
             "run_input": r["input"],
             "content": r["content"],
             "tools": json.loads(r["tools"]) if r["tools"] else [],
             "created_at": r["created_at"],
             "source": r["source"],
-        } for r in rows]
-    return runs
+        } for r in db_rows]
+    conn.close()
+    runs_by_id: dict = {}
+    for row in rows:
+        event = json.loads(row["data"])
+        evt = event.get("event")
+        run_id = event.get("run_id")
+        if not run_id:
+            continue
+        if run_id not in runs_by_id:
+            runs_by_id[run_id] = {
+                "run_input": "",
+                "content": "",
+                "tools": [],
+                "created_at": event.get("created_at", 0),
+                "source": "",
+            }
+        if evt == "RunContent":
+            source = event.get("source")
+            if source:
+                runs_by_id[run_id]["run_input"] = event.get("content", "")
+                runs_by_id[run_id]["source"] = source
+            else:
+                runs_by_id[run_id]["content"] = event.get("content", "")
+        elif evt == "ToolCallStarted":
+            runs_by_id[run_id]["tools"].extend(event.get("tools", []))
+    return list(runs_by_id.values())
 
 
 @app.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     SESSIONS.pop(session_id, None)
-    RUNS.pop(session_id, None)
+    conn = _db()
+    conn.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM runs WHERE session_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
     return {"status": "deleted"}
 
 

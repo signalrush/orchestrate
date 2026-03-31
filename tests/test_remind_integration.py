@@ -1,19 +1,35 @@
 """Integration test: remind() via API mode posts to the API endpoint."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from orchestrate.api.server import app, AGENTS, SESSIONS, RUNS
+from orchestrate.api.server import app, AGENTS, SESSIONS, _db
 from orchestrate.core import Auto
+
+
+def _seed_events(session_id: str, events: list[dict]):
+    """Insert events into session_events table for testing."""
+    conn = _db()
+    for evt in events:
+        conn.execute(
+            "INSERT INTO session_events (session_id, data, created_at) VALUES (?, ?, ?)",
+            (session_id, json.dumps(evt), evt.get("created_at", 0)),
+        )
+    conn.commit()
+    conn.close()
 
 
 @pytest.fixture(autouse=True)
 def _reset_state():
     SESSIONS.clear()
-    RUNS.clear()
+    conn = _db()
+    conn.execute("DELETE FROM session_events")
+    conn.commit()
+    conn.close()
     AGENTS.clear()
     AGENTS["orchestrator"] = {
         "id": "orchestrator",
@@ -60,9 +76,8 @@ async def test_remind_via_api_posts_to_endpoint():
     import inspect
 
     source = inspect.getsource(_process_agent_message)
-    # Verify the worker stores source in runs
+    # Verify the worker handles source
     assert "source" in source
-    assert "RUNS" in source
 
 
 @pytest.mark.asyncio
@@ -88,29 +103,14 @@ async def test_session_runs_return_source_field(client):
         "created_at": 1000,
         "updated_at": 1000,
     }
-    RUNS[sid] = [
-        {
-            "run_input": "hello",
-            "content": "hi",
-            "tools": [],
-            "created_at": 1000,
-            "source": "user",
-        },
-        {
-            "run_input": "remind msg",
-            "content": "ok",
-            "tools": [],
-            "created_at": 1001,
-            "source": "system",
-        },
-        {
-            "run_input": "another",
-            "content": "sure",
-            "tools": [],
-            "created_at": 1002,
-            "source": "user",
-        },
-    ]
+    _seed_events(sid, [
+        {"event": "RunContent", "content": "hello", "source": "user", "run_id": "r1", "created_at": 1000},
+        {"event": "RunContent", "content": "hi", "run_id": "r1", "created_at": 1000},
+        {"event": "RunContent", "content": "remind msg", "source": "system", "run_id": "r2", "created_at": 1001},
+        {"event": "RunContent", "content": "ok", "run_id": "r2", "created_at": 1001},
+        {"event": "RunContent", "content": "another", "source": "user", "run_id": "r3", "created_at": 1002},
+        {"event": "RunContent", "content": "sure", "run_id": "r3", "created_at": 1002},
+    ])
 
     resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
     runs = resp.json()

@@ -106,6 +106,23 @@ export const getSessionAPI = async (
   return response.json()
 }
 
+export const getSessionEventsAPI = async (
+  base: string,
+  sessionId: string,
+  after: number = 0,
+  authToken?: string
+): Promise<Array<Record<string, unknown>>> => {
+  const url = `${APIRoutes.GetSessionEvents(base, sessionId)}?after=${after}`
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to fetch session events: ${response.statusText}`)
+  }
+  return response.json()
+}
+
 export const deleteSessionAPI = async (
   base: string,
   dbId: string,

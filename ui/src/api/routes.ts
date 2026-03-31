@@ -5,6 +5,8 @@ export const APIRoutes = {
   GetSessions: (agentOSUrl: string) => `${agentOSUrl}/sessions`,
   GetSession: (agentOSUrl: string, sessionId: string) =>
     `${agentOSUrl}/sessions/${sessionId}/runs`,
+  GetSessionEvents: (agentOSUrl: string, sessionId: string) =>
+    `${agentOSUrl}/sessions/${sessionId}/events`,
 
   DeleteSession: (agentOSUrl: string, sessionId: string) =>
     `${agentOSUrl}/sessions/${sessionId}`,

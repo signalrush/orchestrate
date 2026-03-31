@@ -7,16 +7,28 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from orchestrate.api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
+from orchestrate.api.server import app, AGENTS, SESSIONS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
+
+
+def _seed_events(session_id: str, events: list[dict]):
+    """Insert events into session_events table for testing."""
+    conn = _db()
+    for evt in events:
+        conn.execute(
+            "INSERT INTO session_events (session_id, data, created_at) VALUES (?, ?, ?)",
+            (session_id, json.dumps(evt), evt.get("created_at", 0)),
+        )
+    conn.commit()
+    conn.close()
 
 
 @pytest.fixture(autouse=True)
 def _reset_state():
     """Reset in-memory stores between tests."""
     SESSIONS.clear()
-    RUNS.clear()
     conn = _db()
     conn.execute("DELETE FROM context_entries")
+    conn.execute("DELETE FROM session_events")
     conn.commit()
     conn.close()
     # Restore default agent
@@ -104,7 +116,6 @@ async def test_session_runs_returns_array(client):
 @pytest.mark.asyncio
 async def test_session_runs_have_run_input_and_content(client):
     """agent-ui reconstructs messages from run_input + content fields."""
-    # Seed a session with a run
     sid = "test-session"
     SESSIONS[sid] = {
         "session_id": sid,
@@ -113,9 +124,11 @@ async def test_session_runs_have_run_input_and_content(client):
         "created_at": 1000,
         "updated_at": 1000,
     }
-    RUNS[sid] = [
-        {"run_input": "hello", "content": "hi there", "tools": [], "created_at": 1000},
-    ]
+    run_id = "run-1"
+    _seed_events(sid, [
+        {"event": "RunContent", "content": "hello", "source": "user", "run_id": run_id, "created_at": 1000},
+        {"event": "RunContent", "content": "hi there", "run_id": run_id, "created_at": 1000},
+    ])
 
     resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
     runs = resp.json()
@@ -146,11 +159,10 @@ async def test_teams_returns_empty_list(client):
 async def test_delete_session(client):
     sid = "to-delete"
     SESSIONS[sid] = {"session_id": sid}
-    RUNS[sid] = []
+    _seed_events(sid, [{"event": "RunContent", "content": "test", "run_id": "r1", "created_at": 1}])
     resp = await client.delete(f"/sessions/{sid}", params={"db_id": ""})
     assert resp.status_code == 200
     assert sid not in SESSIONS
-    assert sid not in RUNS
 
 
 @pytest.mark.asyncio
@@ -164,22 +176,13 @@ async def test_run_stores_source_field(client):
         "created_at": 1000,
         "updated_at": 1000,
     }
-    RUNS[sid] = [
-        {
-            "run_input": "hello",
-            "content": "hi",
-            "tools": [],
-            "created_at": 1000,
-            "source": "user",
-        },
-        {
-            "run_input": "remind msg",
-            "content": "ok",
-            "tools": [],
-            "created_at": 1001,
-            "source": "system",
-        },
-    ]
+    run_id = "run-src"
+    _seed_events(sid, [
+        {"event": "RunContent", "content": "hello", "source": "user", "run_id": run_id, "created_at": 1000},
+        {"event": "RunContent", "content": "hi", "run_id": run_id, "created_at": 1000},
+        {"event": "RunContent", "content": "remind msg", "source": "system", "run_id": "run-src-2", "created_at": 1001},
+        {"event": "RunContent", "content": "ok", "run_id": "run-src-2", "created_at": 1001},
+    ])
     resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
     runs = resp.json()
     assert runs[0]["source"] == "user"
@@ -636,28 +639,23 @@ async def test_reregister_agent_worker_uses_updated_config(client):
         worker.cancel()
 
 
-@pytest.mark.xfail(strict=True, reason="B6: DELETE /sessions does not remove DB runs")
 @pytest.mark.asyncio
-async def test_delete_session_also_removes_from_db(client):
-    # Documents bug B6: DELETE /sessions only removes from in-memory, NOT from DB
-    SESSIONS["sess-to-delete"] = {"session_id": "sess-to-delete"}
-    conn = _db()
-    conn.execute(
-        "INSERT INTO runs (agent_name, session_id, source, input, content, tools, created_at) VALUES (?,?,?,?,?,?,?)",
-        ("orchestrator", "sess-to-delete", "user", "hi", "hello", "[]", 1),
-    )
-    conn.commit()
-    conn.close()
+async def test_delete_session_also_removes_events_from_db(client):
+    """DELETE /sessions should remove session_events from DB."""
+    sid = "sess-to-delete"
+    SESSIONS[sid] = {"session_id": sid}
+    _seed_events(sid, [
+        {"event": "RunContent", "content": "hi", "run_id": "r1", "created_at": 1},
+    ])
 
-    resp = await client.delete("/sessions/sess-to-delete", params={"db_id": ""})
+    resp = await client.delete(f"/sessions/{sid}", params={"db_id": ""})
     assert resp.status_code == 200
-    assert "sess-to-delete" not in SESSIONS
+    assert sid not in SESSIONS
 
     conn = _db()
-    rows = conn.execute("SELECT * FROM runs WHERE session_id = ?", ("sess-to-delete",)).fetchall()
+    rows = conn.execute("SELECT * FROM session_events WHERE session_id = ?", (sid,)).fetchall()
     conn.close()
-    # Currently FAILS (B6): runs are NOT deleted from DB
-    assert len(rows) == 0, "DB runs should be deleted when session is deleted"
+    assert len(rows) == 0, "session_events should be deleted when session is deleted"
 
 
 @pytest.mark.xfail(strict=True, reason="B7: pinned entries bypass query filter")
@@ -937,3 +935,47 @@ async def test_load_agent_definitions_no_frontmatter_skipped():
             MockPath.home.return_value.__truediv__.return_value.__truediv__.return_value = mock_dir
             result = _load_agent_definitions()
         assert result == {}
+
+
+# ---- session_events endpoint ----
+
+
+@pytest.mark.asyncio
+async def test_session_events_endpoint(client):
+    """GET /sessions/{id}/events returns events with seq numbers."""
+    sid = "events-test"
+    SESSIONS[sid] = {"session_id": sid}
+    _seed_events(sid, [
+        {"event": "RunContent", "content": "hello", "source": "user", "run_id": "r1", "created_at": 1},
+        {"event": "RunContent", "content": "response", "run_id": "r1", "created_at": 2},
+    ])
+
+    resp = await client.get(f"/sessions/{sid}/events", params={"after": 0})
+    assert resp.status_code == 200
+    events = resp.json()
+    assert len(events) == 2
+    assert "seq" in events[0]
+    assert events[0]["event"] == "RunContent"
+    assert events[1]["seq"] > events[0]["seq"]
+
+
+@pytest.mark.asyncio
+async def test_session_events_after_cursor(client):
+    """GET /sessions/{id}/events?after=N returns only events after seq N."""
+    sid = "cursor-test"
+    SESSIONS[sid] = {"session_id": sid}
+    _seed_events(sid, [
+        {"event": "RunContent", "content": "first", "run_id": "r1", "created_at": 1},
+        {"event": "RunContent", "content": "second", "run_id": "r1", "created_at": 2},
+        {"event": "RunContent", "content": "third", "run_id": "r1", "created_at": 3},
+    ])
+
+    # Get all to find seq of first event
+    all_events = (await client.get(f"/sessions/{sid}/events")).json()
+    first_seq = all_events[0]["seq"]
+
+    # Fetch after first
+    resp = await client.get(f"/sessions/{sid}/events", params={"after": first_seq})
+    events = resp.json()
+    assert len(events) == 2
+    assert events[0]["content"] == "second"
