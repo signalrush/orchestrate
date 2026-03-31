@@ -95,7 +95,7 @@ export default function KanbanView() {
   return (
     <div className="flex flex-1 min-w-0 h-full overflow-hidden">
       {/* Left: Kanban columns — contained, never bleeds into chat */}
-      <div className="flex min-w-0 flex-1 gap-3 p-4 overflow-hidden">
+      <div className="flex min-w-0 flex-1 gap-2 p-2 overflow-hidden">
         <KanbanColumn title="Backlog" status="queued" tasks={queued} selectedTaskId={selectedTask?.task_id} onSelectTask={setSelectedTask} />
         <KanbanColumn title="In Progress" status="running" tasks={running} selectedTaskId={selectedTask?.task_id} onSelectTask={setSelectedTask} />
         <KanbanColumn title="Failed" status="failed" tasks={failed} selectedTaskId={selectedTask?.task_id} onSelectTask={setSelectedTask} />

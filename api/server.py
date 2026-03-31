@@ -37,7 +37,10 @@ def _load_agent_definitions() -> dict[str, "AgentDefinition"]:
     if not agents_dir.is_dir():
         return defs
     for md_file in agents_dir.glob("*.md"):
-        text = md_file.read_text()
+        try:
+            text = md_file.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
         # Parse YAML frontmatter
         if not text.startswith("---"):
             continue
@@ -323,8 +326,8 @@ async def _agent_worker(agent_name: str):
             if item.get("type") == "done":
                 continue
 
-            item_source = item["source"]
-            item_message = item["message"]
+            item_source = item.get("source", "system")
+            item_message = item.get("message", "")
             item_future = item.get("future")
             item_run_id = str(uuid.uuid4())
             session_id = item.get("session_id") or config.get("session_id", agent_name)

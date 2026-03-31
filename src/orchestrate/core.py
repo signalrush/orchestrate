@@ -1,5 +1,6 @@
 """orchestrate core — Orchestrate class (pure HTTP client)."""
 
+import asyncio
 import datetime
 import json
 import os
@@ -297,7 +298,7 @@ async def _save_and_return(
             )
             if save_resp.status_code == 200:
                 save_data = save_resp.json()
-                entry_id = str(save_data.get("id", entry_id))
+                entry_id = str(save_data.get("id") or entry_id)
                 summary = save_data.get("summary", summary)
                 file_path = str(Path.home() / ".orchestrate" / "context" / f"{entry_id}.md")
             else:
@@ -604,24 +605,26 @@ class Agent:
 
         self._client = httpx.AsyncClient(base_url=self._api_url, timeout=None)
         self._registered = False
+        self._register_lock = asyncio.Lock()
 
     async def _ensure_registered(self) -> None:
         """Register with server on first arun() call."""
         if self._registered:
             return
-        config: dict[str, Any] = {"name": self.name}
-        if self.prompt is not None:
-            config["prompt"] = self.prompt
-        if self.model is not None:
-            config["model"] = self.model
-        if self.tools is not None:
-            config["tools"] = self.tools
-        import os as _os
-        cwd = _os.getcwd()
-        config["cwd"] = cwd
-        resp = await self._client.post("/agents", json=config)
-        resp.raise_for_status()
-        self._registered = True
+        async with self._register_lock:
+            if self._registered:
+                return
+            config: dict[str, Any] = {"name": self.name}
+            if self.prompt is not None:
+                config["prompt"] = self.prompt
+            if self.model is not None:
+                config["model"] = self.model
+            if self.tools is not None:
+                config["tools"] = self.tools
+            config["cwd"] = os.getcwd()
+            resp = await self._client.post("/agents", json=config)
+            resp.raise_for_status()
+            self._registered = True
 
     async def arun(
         self,

@@ -41,13 +41,6 @@ const EMPTY_STATE: Record<TaskStatus, { icon: React.ReactNode; message: string }
   },
 }
 
-const HEADER_STYLE: Record<TaskStatus, string> = {
-  queued: 'text-muted-foreground',
-  running: 'text-blue-600 dark:text-blue-400',
-  completed: 'text-green-600 dark:text-green-400',
-  failed: 'text-red-600 dark:text-red-400',
-}
-
 const HEADER_DOT: Record<TaskStatus, string> = {
   queued: 'bg-muted-foreground/40',
   running: 'bg-blue-500',
@@ -65,20 +58,20 @@ interface KanbanColumnProps {
 
 export default function KanbanColumn({ title, status, tasks, selectedTaskId, onSelectTask }: KanbanColumnProps) {
   return (
-    <div className="flex flex-col min-w-[180px] flex-1 bg-card/50 rounded-lg p-2 overflow-hidden">
+    <div className="flex flex-col min-w-[180px] flex-1 bg-card rounded-lg p-2 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-2 px-1 pb-2 mb-1">
+      <div className="flex items-center gap-2 px-1 h-10">
         <span className={cn('block h-2 w-2 rounded-full flex-shrink-0', HEADER_DOT[status])} />
-        <span className={cn('text-xs font-semibold uppercase tracking-wide', HEADER_STYLE[status])}>
+        <span className="text-sm font-semibold text-foreground">
           {title}
         </span>
-        <span className="ml-auto text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
+        <span className="ml-auto text-xs text-muted-foreground">
           {tasks.length}
         </span>
       </div>
 
       {/* Card list */}
-      <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+      <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5">
         {tasks.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-1.5 py-8 text-muted-foreground/40">
             {EMPTY_STATE[status].icon}

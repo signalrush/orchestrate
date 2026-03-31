@@ -38,7 +38,7 @@ def _load_state() -> Dict[str, Any]:
             if not content:
                 return {}
             return json.loads(content)
-    except (json.JSONDecodeError, OSError):
+    except OSError:
         return {}
 
 
@@ -66,7 +66,7 @@ def _save_state(data: Dict[str, Any]) -> None:
 
 def _read_modify_write(modifier):
     lock_file = _get_lock_file()
-    with open(lock_file, "w") as lf:
+    with open(lock_file, "a") as lf:
         fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
         try:
             current = _load_state()
@@ -93,7 +93,7 @@ def update(data: Dict[str, Any]) -> None:
 def get(key: Optional[str] = None) -> Any:
     """Get a value or entire state dict. Returns None for missing keys."""
     lock_file = _get_lock_file()
-    with open(lock_file, "w") as lf:
+    with open(lock_file, "a") as lf:
         fcntl.flock(lf.fileno(), fcntl.LOCK_SH)
         try:
             s = _load_state()

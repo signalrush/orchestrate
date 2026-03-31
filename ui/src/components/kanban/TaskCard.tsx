@@ -8,12 +8,6 @@ function formatElapsed(secs: number): string {
   return `${Math.floor(secs / 60)}m ${secs % 60}s`
 }
 
-const STATUS_PILL: Record<string, string> = {
-  queued: 'bg-muted text-muted-foreground',
-  running: 'bg-blue-500/15 text-blue-600 dark:text-blue-400',
-  completed: 'bg-green-500/15 text-green-600 dark:text-green-400',
-  failed: 'bg-destructive/15 text-destructive',
-}
 
 export default function TaskCard({ task, index, isSelected, onSelect }: { task: KanbanTask; index?: number; isSelected?: boolean; onSelect?: (task: KanbanTask) => void }) {
   const [elapsed, setElapsed] = useState<number>(() =>
@@ -44,7 +38,7 @@ export default function TaskCard({ task, index, isSelected, onSelect }: { task: 
 
   return (
     <div
-      className={cn("bg-card border rounded-lg p-3 space-y-2 text-sm shadow-sm cursor-pointer transition-shadow duration-150 hover:border-border/80 hover:shadow-md", isSelected ? "border-primary" : "border-border")}
+      className={cn("bg-card border rounded-md p-2.5 space-y-1 text-sm shadow-sm cursor-pointer transition-all duration-150 hover:bg-muted/50 hover:border-border", isSelected ? "ring-1 ring-primary" : "border-border")}
       onClick={() => { setExpanded(e => !e); onSelect?.(task) }}
       style={{
         opacity: visible ? 1 : 0,
@@ -74,24 +68,24 @@ export default function TaskCard({ task, index, isSelected, onSelect }: { task: 
         </div>
       </div>
 
-      <p className={cn('text-sm leading-snug', task.status === 'failed' && 'text-muted-foreground', !expanded && 'line-clamp-2')}>
+      <p className={cn('text-sm font-medium leading-snug', task.status === 'failed' && 'text-muted-foreground', !expanded && 'line-clamp-1')}>
         {task.title}
       </p>
 
       {task.summary && (task.status === 'running' || task.status === 'completed') && (
-        <div className="flex items-center gap-1 min-w-0">
+        <div className="flex items-center gap-1 min-w-0 mt-1.5">
           <span className={cn(
-            'flex-shrink-0 text-[8px] leading-none',
+            'flex-shrink-0 text-[10px] leading-none',
             task.status === 'running' ? 'text-blue-500' : 'text-green-500'
           )}>●</span>
-          <span className={cn('font-mono text-[10px] text-muted-foreground', expanded ? 'break-words whitespace-pre-wrap' : 'truncate')}>
+          <span className={cn('font-mono text-[12px] text-muted-foreground', expanded ? 'break-words whitespace-pre-wrap' : 'truncate')}>
             {task.summary}
           </span>
         </div>
       )}
 
       {task.status === 'failed' && task.error && (
-        <p className={cn('text-xs text-destructive break-words', !expanded && 'line-clamp-2')}>{task.error}</p>
+        <p className={cn('text-xs text-destructive break-words mt-1.5', !expanded && 'line-clamp-2')}>{task.error}</p>
       )}
 
       {expanded && (
@@ -116,7 +110,7 @@ export default function TaskCard({ task, index, isSelected, onSelect }: { task: 
       )}
 
       <div className="flex items-center justify-between">
-        <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-medium', STATUS_PILL[task.status])}>
+        <span className="text-[10px] text-muted-foreground font-normal">
           {task.status}
         </span>
         <span className="text-[10px] text-muted-foreground">
