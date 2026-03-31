@@ -16,7 +16,6 @@ dev = ["pytest", "pytest-asyncio"]
 api = ["claude-agent-sdk", "fastapi", "uvicorn[standard]", "python-multipart"]
 
 [project.scripts]
-orchestrate-run = "orchestrate.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

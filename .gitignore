@@ -27,3 +27,13 @@ ui/out/
 ui/.turbo/
 ui/.vercel/
 ui/*.tsbuildinfo
+ui/test-results/
+ui/playwright-report/
+
+# Orchestrate runtime
+~/.orchestrate/
+orchestrate-state.json
+
+# Temp/debug files
+*.cpython-*.pyc
+__pycache__/

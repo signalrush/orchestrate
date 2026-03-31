@@ -5,225 +5,209 @@ description: Run yourself in a loop with programmatic control via the Agent SDK.
 
 # Orchestrate
 
-Write a Python program that drives agent execution. The program is your body — `orch.run()` is how you think. You write the loop, it keeps you alive.
+Write a Python program that drives agent execution. The program is your body — agents are your hands. You write the loop, they do the work.
 
-A single program can efficiently coordinate 100+ agents — fan out work with `asyncio.gather`, manage worker pools with queues, and stay in control through structured `orch.run()` decisions. The only limit is how well you design the program.
+A single program can coordinate 100+ agents — fan out work with `asyncio.gather`, manage worker pools with queues, and stay in control through structured decisions.
 
 ## Launch
 
-1. Write `async def main(orch):`
-2. Run: `orchestrate-run <file.py>`
+1. Write a Python program
+2. Run: `python <file.py>`
 
-**CRITICAL: After `orchestrate-run`, STOP. Do not monitor, tail logs, or wait. Your turn is done. The program handles the rest.**
+**CRITICAL: After launching with `python`, STOP. Do not monitor, tail logs, or wait. Your turn is done. The program handles the rest.**
 
-## Primitives
-
-There is one primitive. Everything else is Python.
+## Agent API
 
 ```python
-# Talk to yourself — you see results, you steer decisions
-result = await orch.run("analyze the test results")
+from orchestrate import Agent
 
-# Get structured data back to drive program logic
-result = await orch.run("decide next step", schema={"action": "str", "done": "bool"})
+# Create agents — loads config from ~/.claude/agents/ if available
+researcher = Agent("research")                    # loads ~/.claude/agents/research.md
+dev = Agent("frontend_dev", prompt="React expert") # inline config
+reviewer = Agent("reviewer")                       # loads ~/.claude/agents/reviewer.md
 
-# Dispatch to another agent
-code = await orch.run("implement feature X", to="coder")
+# Run a task
+result = await researcher.arun("analyze the codebase")
+
+# With explicit context
+impl = await dev.arun("implement feature", context=[result])
+
+# With schema for structured output
+review = await reviewer.arun("review this", context=[impl], schema={
+    "status": "str", "issues": "list"
+})
+print(review["status"])  # "APPROVED"
+
+# Spawn a child agent — inherits parent config
+helper = dev.spawn("css_helper", prompt="Handle CSS only")
+await helper.arun("fix spacing", context=[impl])
+
+# Close when done
+await researcher.aclose()
 ```
 
-Concurrency is just `asyncio`:
+### Agent creation
 
 ```python
-# Parallel fan-out — independent work runs simultaneously
-results = await asyncio.gather(
-    orch.run("research approach A", to="researcher-1"),
-    orch.run("research approach B", to="researcher-2"),
+# From ~/.claude/agents/ definition (auto-loads prompt, tools, model)
+researcher = Agent("research")
+
+# Inline definition
+dev = Agent("my_dev", prompt="You are a developer.", model="sonnet")
+
+# Override a .claude/agents/ definition
+fast = Agent("research", model="haiku")  # keeps prompt/tools, overrides model
+
+# Explicit server URL (default: ORCHESTRATE_API_URL env or localhost:7777)
+agent = Agent("research", api_url="http://localhost:7777")
+```
+
+### Concurrency — just asyncio
+
+```python
+# Parallel fan-out
+r1, r2 = await asyncio.gather(
+    Agent("research").arun("check GitHub"),
+    Agent("research").arun("check papers"),
 )
 
-# Work queue — just asyncio.Queue
-queue = asyncio.Queue()
+# Sequential — agent accumulates session context
+await dev.arun("set up project")
+await dev.arun("add auth")   # dev remembers the setup
+await dev.arun("write tests") # dev remembers everything
+```
+
+## Legacy API (still works)
+
+The `Orchestrate` class still works for backward compat:
+
+```python
+from orchestrate import Orchestrate
+
+async def main(orch):
+    await orch.agent("coder", prompt="...")
+    result = await orch.run("do X", to="coder")
 ```
 
 ## Writing effective programs
 
 ### Stay in the loop
 
-You are the brain. The program is the clock. `orch.run()` is the nerve. If you don't call `orch.run()`, you're blind.
+You are the brain. Agents are the hands. If you don't check their work, you're blind.
 
-Bad — fire and forget, you have no idea what happened:
 ```python
-async def main(orch):
-    for task in tasks:
-        await orch.run(task, to="worker")
+# Bad — fire and forget
+for task in tasks:
+    await dev.arun(task)
+
+# Good — check results, steer
+for task in tasks:
+    result = await dev.arun(task)
+    review = await reviewer.arun(f"Review: {result.text}", schema={"approved": "bool", "feedback": "str"})
+    if not review["approved"]:
+        await dev.arun(f"Fix: {review['feedback']}", context=[review])
 ```
 
-Good — you see results, you steer:
-```python
-async def main(orch):
-    for task in tasks:
-        result = await orch.run(task, to="worker")
-        review = await orch.run(f"Review this result: {result}. Is it good enough?",
-                                schema={"approved": "bool", "feedback": "str"})
-        if not review["approved"]:
-            await orch.run(f"Fix based on feedback: {review['feedback']}", to="worker")
-```
-
-Best — you control the entire loop through structured decisions:
-```python
-async def main(orch):
-    instruction = "Survey ~/tasks/queue/ and make a plan."
-    while True:
-        decision = await orch.run(instruction, schema={
-            "done": "bool",
-            "next_action": "str",
-            "delegate_to": "str | null",
-        })
-        if decision["done"]:
-            break
-        if decision["delegate_to"]:
-            result = await orch.run(decision["next_action"], to=decision["delegate_to"])
-            instruction = f"Agent '{decision['delegate_to']}' returned: {result}\nWhat next?"
-        else:
-            instruction = decision["next_action"]
-```
-
-### Parallelize what's parallelizable
-
-If tasks are independent, run them concurrently:
-```python
-async def main(orch):
-    # Sequential — slow (each waits for the previous)
-    r1 = await orch.run("fix bug A", to="coder")
-    r2 = await orch.run("fix bug B", to="coder")
-    r3 = await orch.run("fix bug C", to="coder")
-
-    # Parallel — fast (all run at once on different agents)
-    r1, r2, r3 = await asyncio.gather(
-        orch.run("fix bug A", to="coder-1"),
-        orch.run("fix bug B", to="coder-2"),
-        orch.run("fix bug C", to="coder-3"),
-    )
-```
-
-### Use schema to stay structured
-
-Without schema, you get free text — hard to parse, unreliable for program logic.
-With schema, you get structured data — drives decisions cleanly.
+### Use schema for program logic
 
 ```python
-# Free text — fragile
-result = await orch.run("is the build passing?")
-if "yes" in result.lower():  # brittle string matching
-    ...
-
 # Structured — reliable
-result = await orch.run("check build status", schema={
-    "passing": "bool",
-    "failures": "int",
-    "summary": "str",
+result = await agent.arun("check build status", schema={
+    "passing": "bool", "failures": "int", "summary": "str",
 })
-if result["passing"]:  # clean
-    ...
+if result["passing"]:
+    print("Ship it")
 ```
 
 ### Use context to chain agent work
 
-Every `orch.run()` returns a `ContextResult` — auto-saved to the context store with a summary and a `.md` file. Pass results between agents with `context=`:
+Every `arun()` returns a `ContextResult` — pass results between agents with `context=`:
 
 ```python
-# Step 1: researcher produces findings — auto-saved
-c1 = await orch.run("research X", to="researcher", schema={"findings": "str"})
-
-# Step 2: pass findings as context to implementer
-c2 = await orch.run("implement based on research", to="coder", context=[c1])
-
-# The coder sees:
-# [Context from researcher (full output: ~/.orchestrate/context/86.md)]:
-# <summary of findings>
-#
-# implement based on research
+research = await researcher.arun("research X")
+impl = await dev.arun("implement based on research", context=[research])
+review = await reviewer.arun("review", context=[research, impl])
 ```
 
-`ContextResult` behaves like a dict for schema fields, and `print(c1)` shows the summary:
-
+`ContextResult` behaves like a dict for schema fields:
 ```python
-c1 = await orch.run("analyze", to="analyst", schema={"score": "int", "reason": "str"})
-print(c1)              # prints the summary
-print(c1["score"])     # 87
-print(c1["reason"])    # "Good coverage but..."
-print(c1.id)           # context entry ID
-print(c1.file)         # ~/.orchestrate/context/42.md
-```
-
-Recall past results from the context store:
-
-```python
-past = await orch.recall(tags="research", agent="researcher", limit=5)
-c3 = await orch.run("build on prior work", to="builder", context=past)
-```
-
-Fetch a single context entry by ID:
-
-```python
-entry = await orch.get_context("42")   # returns ContextResult or None
-```
-
-Pass context IDs directly (auto-fetched):
-
-```python
-# If you already know the IDs from a previous recall or search
-await orch.run("build on this", to="builder", context=["42", "86"])
-```
-
-Pin important context so it always appears in recall:
-
-```python
-await orch.pin(c1)     # always included in recall results
-await orch.unpin(c1)   # remove pin
+r = await agent.arun("analyze", schema={"score": "int", "reason": "str"})
+print(r["score"])   # 87
+print(r.text)       # full response
+print(r.summary)    # one-line summary
+print(r.file)       # ~/.orchestrate/context/42.md
 ```
 
 ### CRITICAL: Always validate context before passing
 
-Context is the most important input to downstream agents. **Never blindly pass recall() results without inspecting them.** Bad context = bad output.
+Never blindly pass `recall()` results. Inspect first:
 
 ```python
-# BAD — blindly passing whatever recall returns
-past = await orch.recall(agent="researcher", limit=10)
-await orch.run("build on this", to="builder", context=past)
-
-# GOOD — inspect, filter, then pass
 past = await orch.recall(agent="researcher", limit=10)
 for c in past:
     print(f"  [{c.id}] {c.agent}: {c.summary[:80]}")
-
-# Filter to only relevant entries
 relevant = [c for c in past if "architecture" in c.summary.lower()]
-print(f"Passing {len(relevant)} of {len(past)} entries")
-await orch.run("build on this", to="builder", context=relevant)
+await dev.arun("build on this", context=relevant)
 ```
 
-Why this matters:
-- `recall()` searches the **persistent store across all runs** — old/stale entries accumulate
-- Passing irrelevant context wastes tokens and confuses the agent
-- Always check: right count? right content? right timeframe?
-- When writing orchestrate programs, hardcode known-good context IDs if you've already identified them during research
+### Implement → Review → Fix loop
 
-### Configure agents for different roles
+Every implementation should be reviewed by a separate agent (not self-review):
 
 ```python
-await orch.agent("coder", cwd="/project")
-await orch.agent("reviewer", cwd="/project")
+researcher = Agent("research")
+dev = Agent("implementer")
+reviewer = Agent("reviewer")
 
-code = await orch.run("implement the feature", to="coder")
-review = await orch.run(f"review this:\n{code}", to="reviewer")
+# Research
+research = await researcher.arun("analyze codebase")
+
+# Implement
+impl = await dev.arun("implement feature", context=[research])
+
+# Review → Fix loop (max 2 rounds)
+for attempt in range(3):
+    review = await reviewer.arun("review this", context=[impl], schema={"status": "str", "issues": "list"})
+    if review["status"] == "APPROVED":
+        break
+    if attempt < 2:
+        issues = "\n".join(f"- {i}" for i in review["issues"])
+        impl = await dev.arun(f"Fix:\n{issues}", context=[review])
 ```
 
-## Manage runs
+## Full example
 
-```bash
-orchestrate-run list              # show all runs
-orchestrate-run status <id>       # details + recent log
-orchestrate-run log <id>          # show last 50 lines (non-blocking)
-orchestrate-run stop <id>         # stop a run
-orchestrate-run stop --all        # stop all runs
+```python
+import asyncio
+from orchestrate import Agent
+
+async def main():
+    researcher = Agent("research")
+    dev = Agent("implementer")
+    reviewer = Agent("reviewer")
+
+    # Phase 1: Parallel research
+    r1, r2 = await asyncio.gather(
+        researcher.arun("research approach A"),
+        researcher.arun("research approach B"),
+    )
+
+    # Phase 2: Implement
+    impl = await dev.arun("implement the best approach", context=[r1, r2])
+
+    # Phase 3: Review loop
+    for attempt in range(3):
+        review = await reviewer.arun("review", context=[impl], schema={"status": "str", "issues": "list"})
+        if review["status"] == "APPROVED":
+            break
+        impl = await dev.arun(f"fix: {review['issues']}", context=[review])
+
+    print(f"Done! Final review: {review['status']}")
+
+    await researcher.aclose()
+    await dev.aclose()
+    await reviewer.aclose()
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```

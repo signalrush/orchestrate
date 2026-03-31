@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db
+from api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
 
 
 @pytest.fixture(autouse=True)
@@ -177,13 +177,13 @@ async def test_run_stores_source_field(client):
             "content": "ok",
             "tools": [],
             "created_at": 1001,
-            "source": "remind",
+            "source": "system",
         },
     ]
     resp = await client.get(f"/sessions/{sid}/runs", params={"type": "agent"})
     runs = resp.json()
     assert runs[0]["source"] == "user"
-    assert runs[1]["source"] == "remind"
+    assert runs[1]["source"] == "system"
 
 
 # ---- ephemeral run endpoints ----
@@ -368,3 +368,90 @@ async def test_context_empty_search(client):
     resp = await client.get("/context")
     assert resp.status_code == 200
     assert "data" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_kanban_events_on_agent_message(client):
+    """post_agent_message emits TaskCreated → TaskStarted → TaskCompleted with matching task_id."""
+    import api.server as srv
+
+    emitted: list[dict] = []
+    original_emit = srv._emit
+    srv._emit = lambda payload: emitted.append(dict(payload))
+
+    # Register an agent via the API
+    await client.post("/agents", json={
+        "name": "kb-agent",
+        "agent_id": "kb-agent",
+        "model": {"name": "t", "model": "claude-3-haiku-20240307", "provider": "anthropic"},
+    })
+    emitted.clear()
+
+    # Mock _process_agent_message to return immediately
+    async def fake_process(msg, source, name, session_id, config, resume_id, run_id):
+        return ("task done", None)
+
+    with patch.object(srv, "_process_agent_message", fake_process):
+        resp = await client.post(
+            "/agents/kb-agent/message",
+            data={"message": "analyze the codebase", "source": "system"},
+        )
+
+    assert resp.status_code == 200
+    event_names = [e["event"] for e in emitted]
+    assert "TaskCreated" in event_names
+    assert "TaskStarted" in event_names
+    assert "TaskCompleted" in event_names
+
+    created = next(e for e in emitted if e["event"] == "TaskCreated")
+    completed = next(e for e in emitted if e["event"] == "TaskCompleted")
+    assert "task_id" in created
+    assert created["task_id"]  # non-empty string
+    assert completed["task_id"] == created["task_id"]
+    assert "elapsed_secs" in completed
+    assert created["title"] == "analyze the codebase"
+
+    # Cleanup
+    srv._emit = original_emit
+    AGENT_QUEUES.pop("kb-agent", None)
+    worker = AGENT_WORKERS.pop("kb-agent", None)
+    if worker and not worker.done():
+        worker.cancel()
+
+
+@pytest.mark.asyncio
+async def test_user_messages_do_not_create_kanban_events(client):
+    """source='user' messages must NOT emit TaskCreated/TaskStarted/TaskCompleted."""
+    import api.server as srv
+
+    emitted = []
+    original_emit = srv._emit
+    srv._emit = lambda payload: emitted.append(dict(payload))
+
+    await client.post("/agents", json={
+        "name": "kb-user-agent",
+        "agent_id": "kb-user-agent",
+    })
+    emitted.clear()
+
+    async def fake_process(msg, source, name, session_id, config, resume_id, run_id):
+        return ("done", None)
+
+    with patch.object(srv, "_process_agent_message", fake_process):
+        resp = await client.post(
+            "/agents/kb-user-agent/message",
+            data={"message": "hello from user", "source": "user"},
+        )
+
+    assert resp.status_code == 200
+    event_names = [e["event"] for e in emitted]
+    assert "TaskCreated" not in event_names
+    assert "TaskStarted" not in event_names
+    assert "TaskCompleted" not in event_names
+
+    srv._emit = original_emit
+    from api.server import AGENT_QUEUES, AGENT_WORKERS
+    AGENT_QUEUES.pop("kb-user-agent", None)
+    worker = AGENT_WORKERS.pop("kb-user-agent", None)
+    if worker and not worker.done():
+        worker.cancel()

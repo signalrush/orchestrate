@@ -28,7 +28,50 @@ try:
 except Exception:
     pass
 
-from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, ResultMessage
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, ResultMessage, AgentDefinition
+
+def _load_agent_definitions() -> dict[str, "AgentDefinition"]:
+    """Load agent definitions from ~/.claude/agents/*.md files."""
+    agents_dir = Path.home() / ".claude" / "agents"
+    defs = {}
+    if not agents_dir.is_dir():
+        return defs
+    for md_file in agents_dir.glob("*.md"):
+        text = md_file.read_text()
+        # Parse YAML frontmatter
+        if not text.startswith("---"):
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        frontmatter = parts[1].strip()
+        body = parts[2].strip()
+
+        # Parse frontmatter fields
+        meta = {}
+        for line in frontmatter.split("\n"):
+            if ":" in line:
+                key, _, val = line.partition(":")
+                meta[key.strip()] = val.strip().strip('"').strip("'")
+
+        name = meta.get("name", md_file.stem)
+        tools_str = meta.get("tools", "")
+        tools = [t.strip() for t in tools_str.split(",") if t.strip()] if tools_str else None
+        model_val = meta.get("model", "inherit")
+        if model_val not in ("sonnet", "opus", "haiku", "inherit"):
+            model_val = "inherit"
+
+        defs[name] = AgentDefinition(
+            description=meta.get("description", ""),
+            prompt=body,
+            tools=tools,
+            model=model_val,
+        )
+    return defs
+
+
+# Load at startup
+AGENT_DEFINITIONS: dict[str, "AgentDefinition"] = _load_agent_definitions()
 
 app = FastAPI(title="orchestrate API")
 
@@ -175,6 +218,22 @@ async def _process_agent_message(message, source, agent_name, session_id, config
     cwd = config.get("cwd", os.getcwd())
     tools = config.get("tools", ALL_TOOLS)
 
+    # Determine system prompt: user override > agent definition > None
+    agent_def = AGENT_DEFINITIONS.get(agent_name)
+    custom_prompt = config.get("prompt", "")
+    if custom_prompt:
+        system_prompt = custom_prompt
+    elif agent_def:
+        system_prompt = agent_def.prompt
+    else:
+        system_prompt = None
+
+    # Use system_prompt preset to append to default Claude Code prompt
+    if system_prompt:
+        system_prompt_val = {"type": "preset", "preset": "claude_code", "append": system_prompt}
+    else:
+        system_prompt_val = None
+
     async for msg in query(
         prompt=message,
         options=ClaudeAgentOptions(
@@ -185,6 +244,8 @@ async def _process_agent_message(message, source, agent_name, session_id, config
             resume=resume_id,
             setting_sources=["user"],
             cwd=cwd,
+            system_prompt=system_prompt_val,
+            agents=AGENT_DEFINITIONS or None,
             env={
                 "ORCHESTRATE_API_URL": "http://localhost:7777",
                 "ORCHESTRATE_SESSION_ID": session_id,
@@ -267,16 +328,29 @@ async def _agent_worker(agent_name: str):
             item_future = item.get("future")
             item_run_id = str(uuid.uuid4())
             session_id = item.get("session_id") or config.get("session_id", agent_name)
+            item_task_id = item.get("task_id")
+            item_started_at = int(time.time())
 
-            # Tell UI this message left the queue
-            _emit({
-                "event": "MessageDequeued",
-                "content": item_message,
-                "source": item_source,
-                "agent_name": agent_name,
-                "session_id": session_id,
-                "created_at": int(time.time()),
-            })
+            # Emit TaskStarted for queued tasks; MessageDequeued for direct UI runs
+            if item_task_id:
+                _emit({
+                    "event": "TaskStarted",
+                    "task_id": item_task_id,
+                    "run_id": item_run_id,
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                    "title": item_message[:80],
+                    "started_at": item_started_at,
+                })
+            else:
+                _emit({
+                    "event": "MessageDequeued",
+                    "content": item_message,
+                    "source": item_source,
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                    "created_at": int(time.time()),
+                })
 
             # Source marker — UI adds to main messages
             _emit({
@@ -303,6 +377,18 @@ async def _agent_worker(agent_name: str):
                 conn.close()
                 if item_future and not item_future.done():
                     item_future.set_result(response_text)
+                if item_task_id:
+                    _emit({
+                        "event": "TaskCompleted",
+                        "task_id": item_task_id,
+                        "run_id": item_run_id,
+                        "agent_name": agent_name,
+                        "session_id": session_id,
+                        "title": item_message[:80],
+                        "summary": response_text[:200] if isinstance(response_text, str) else "",
+                        "elapsed_secs": int(time.time()) - item_started_at,
+                        "completed_at": int(time.time()),
+                    })
             except Exception as e:
                 _emit({
                     "event": "RunError",
@@ -311,6 +397,17 @@ async def _agent_worker(agent_name: str):
                     "session_id": session_id,
                     "created_at": int(time.time()),
                 })
+                if item_task_id:
+                    _emit({
+                        "event": "TaskFailed",
+                        "task_id": item_task_id,
+                        "run_id": item_run_id,
+                        "agent_name": agent_name,
+                        "session_id": session_id,
+                        "title": item_message[:80],
+                        "error": str(e),
+                        "failed_at": int(time.time()),
+                    })
                 if item_future and not item_future.done():
                     item_future.set_exception(e)
 
@@ -406,6 +503,7 @@ async def post_agent_message(
     message: str = Form(...),
     source: str = Form("user"),
     session_id: str = Form(""),
+    title: str = Form(""),
 ):
     """Push a message to the agent's queue. Blocks until processed, returns response."""
     # "self" is an alias for "orchestrator"
@@ -422,20 +520,26 @@ async def post_agent_message(
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
-    _emit({
-        "event": "MessageQueued",
-        "content": message,
-        "source": source,
-        "agent_name": agent_name,
-        "session_id": session_id,
-        "created_at": int(time.time()),
-    })
+    # Use clean title (original instruction) if provided, else fall back to message[:80]
+    task_title = title[:80] if title else message[:80]
 
+    task_id = str(uuid.uuid4())
+    if source == "system":
+        _emit({
+            "event": "TaskCreated",
+            "task_id": task_id,
+            "agent_name": agent_name,
+            "session_id": session_id,
+            "title": task_title,
+            "source": source,
+            "created_at": int(time.time()),
+        })
     await AGENT_QUEUES[agent_name].put({
         "message": message,
         "source": source,
         "future": future,
         "session_id": session_id,
+        "task_id": task_id if source == "system" else None,
     })
 
     result = await future
@@ -464,7 +568,7 @@ async def delete_agent(agent_name: str):
     return {"status": "deleted"}
 
 
-@app.post("/agents/{agent_name}/runs")
+@app.post("/agents/{agent_name}/sessions")
 async def run_agent(
     agent_name: str,
     message: str = Form(...),
@@ -510,6 +614,47 @@ async def run_agent(
 
     # Return session info — events come via GET /teams/default/events
     return JSONResponse({"session_id": session_id, "run_id": run_id, "status": "ok"})
+
+
+@app.post("/agents/{agent_name}/runs")
+async def ephemeral_run_json(agent_name: str, request: Request):
+    """Ephemeral task execution — accepts JSON body with 'task' field.
+
+    POST {"task": "...", "schema": {...}, "context": [...]}
+    Returns {"run_id": "...", "status": "ok"} immediately.
+    Result available at GET /runs/{run_id} once complete.
+    """
+    if agent_name not in AGENTS:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+
+    body = await request.json()
+    task = body.get("task")
+    if not task:
+        return JSONResponse({"error": "task is required"}, status_code=400)
+
+    schema = body.get("schema")
+    context = body.get("context")
+    run_id = str(uuid.uuid4())
+    config = AGENTS[agent_name]
+
+    t = asyncio.create_task(
+        _execute_ephemeral_run(run_id, agent_name, task, schema, context, config)
+    )
+    EPHEMERAL_TASKS[run_id] = t
+
+    def _on_task_done(fut: asyncio.Task, _run_id=run_id, _agent=agent_name):
+        if not fut.cancelled() and fut.exception():
+            _emit({
+                "event": "RunError",
+                "content": str(fut.exception()),
+                "agent_name": _agent,
+                "run_id": _run_id,
+                "created_at": int(time.time()),
+            })
+
+    t.add_done_callback(_on_task_done)
+
+    return JSONResponse({"run_id": run_id, "status": "ok"})
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +756,21 @@ async def _execute_ephemeral_run(
         if schema:
             prompt += f"\n\nYou MUST respond with valid JSON matching this schema: {json.dumps(schema)}"
 
+        # Determine system prompt: user override > agent definition > None
+        agent_def = AGENT_DEFINITIONS.get(agent_name)
+        custom_prompt = config.get("prompt", "")
+        if custom_prompt:
+            system_prompt = custom_prompt
+        elif agent_def:
+            system_prompt = agent_def.prompt
+        else:
+            system_prompt = None
+
+        if system_prompt:
+            system_prompt_val = {"type": "preset", "preset": "claude_code", "append": system_prompt}
+        else:
+            system_prompt_val = None
+
         accumulated_text = ""
         max_attempts = 3 if schema else 1
 
@@ -632,6 +792,8 @@ async def _execute_ephemeral_run(
                     resume=None,  # always fresh — never resume for ephemeral runs
                     setting_sources=["user"],
                     cwd=cwd,
+                    system_prompt=system_prompt_val,
+                    agents=AGENT_DEFINITIONS or None,
                 ),
             ):
                 if isinstance(msg, AssistantMessage):
@@ -1009,20 +1171,23 @@ async def post_message(
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
-    _emit({
-        "event": "MessageQueued",
-        "content": message,
-        "source": source,
-        "agent_name": agent_name,
-        "session_id": session_id,
-        "created_at": int(time.time()),
-    })
-
+    task_id = str(uuid.uuid4())
+    if source == "system":
+        _emit({
+            "event": "TaskCreated",
+            "task_id": task_id,
+            "agent_name": agent_name,
+            "session_id": session_id,
+            "title": message[:80],
+            "source": source,
+            "created_at": int(time.time()),
+        })
     await AGENT_QUEUES[agent_name].put({
         "message": message,
         "source": source,
         "future": future,
         "session_id": session_id,
+        "task_id": task_id if source == "system" else None,
     })
 
     result = await future

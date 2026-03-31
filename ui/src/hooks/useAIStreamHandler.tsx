@@ -147,23 +147,25 @@ const useAIChatStreamHandler = () => {
         setSessionsData((prev) => prev)
         window.dispatchEvent(new Event('sessions-refresh'))
       } else if (
-        (chunk.event as string) === 'MessageQueued'
+        (chunk.event as string) === 'TaskCreated'
       ) {
-        // Server says a message entered the queue — add to pending display
+        // Agent task entered the queue — show in pending display
         setPendingQueue((prev) => [...prev, {
-          content: typeof chunk.content === 'string' ? chunk.content : '',
-          source: (chunk as any).source || 'user',
+          content: (chunk as unknown as Record<string, unknown>).title as string || (typeof chunk.content === 'string' ? chunk.content : ''),
+          source: (chunk as unknown as Record<string, unknown>).source as string || 'user',
           created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
+          task_id: (chunk as unknown as Record<string, unknown>).task_id as string | undefined,
         }])
       } else if (
-        (chunk.event as string) === 'MessageDequeued'
+        (chunk.event as string) === 'TaskStarted'
       ) {
-        // Server says a message left the queue — remove from pending display
-        const content = typeof chunk.content === 'string' ? chunk.content : ''
-        const source = (chunk as any).source || 'user'
+        // Agent task left the queue — remove from pending display (match by task_id)
+        const chunkTaskId = (chunk as unknown as Record<string, unknown>).task_id as string | undefined
         setPendingQueue((prev) => {
-          const idx = prev.findIndex((p) => p.content === content && p.source === source)
-          if (idx >= 0) return [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+          if (chunkTaskId) {
+            const idx = prev.findIndex((p) => p.task_id === chunkTaskId)
+            if (idx >= 0) return [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+          }
           return prev
         })
       } else if (
@@ -196,16 +198,17 @@ const useAIChatStreamHandler = () => {
       ) {
         setAgentStatus('')
         // Handle source-tagged events: create bubble + agent bubble
-        if ((chunk as any).source === 'remind' || (chunk as any).source === 'user') {
-          const role = (chunk as any).source === 'remind' ? 'remind' : 'user'
+        const chunkExt = chunk as unknown as Record<string, unknown>
+        if (chunkExt.source === 'system' || chunkExt.source === 'remind' || chunkExt.source === 'user') {
+          const role = (chunkExt.source === 'system' || chunkExt.source === 'remind') ? 'remind' : 'user'
           const content = typeof chunk.content === 'string' ? chunk.content : ''
           setMessages((prevMessages) => {
             const newMessages = [...prevMessages]
             newMessages.push({
-              role: role as any,
+              role: role as 'remind' | 'user',
               content,
               created_at: chunk.created_at ?? Math.floor(Date.now() / 1000),
-              member_name: (chunk as any).member_name
+              member_name: chunkExt.member_name as string | undefined
             })
             newMessages.push({
               role: 'agent',
@@ -213,7 +216,7 @@ const useAIChatStreamHandler = () => {
               tool_calls: [],
               streamingError: false,
               created_at: (chunk.created_at ?? Math.floor(Date.now() / 1000)) + 1,
-              member_name: (chunk as any).member_name
+              member_name: chunkExt.member_name as string | undefined
             })
             return newMessages
           })

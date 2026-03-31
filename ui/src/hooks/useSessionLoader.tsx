@@ -43,7 +43,7 @@ const useSessionLoader = () => {
           selectedEndpoint,
           entityType,
           selectedId,
-          dbId,
+          dbId ?? '',
           authToken
         )
         setSessionsData(sessions.data ?? [])
@@ -76,7 +76,7 @@ const useSessionLoader = () => {
           selectedEndpoint,
           entityType,
           sessionId,
-          dbId,
+          dbId ?? '',
           authToken
         )
         if (response) {
@@ -86,7 +86,7 @@ const useSessionLoader = () => {
 
               if (run) {
                 filteredMessages.push({
-                  role: run.source === 'remind' ? 'remind' : 'user',
+                  role: (run.source === 'system' || run.source === 'remind') ? 'remind' : 'user',
                   content: run.run_input ?? '',
                   created_at: run.created_at
                 })

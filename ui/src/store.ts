@@ -7,6 +7,7 @@ import {
   TeamDetails,
   type ChatMessage
 } from '@/types/os'
+import { KanbanTask } from '@/types/kanban'
 
 interface Store {
   hydrated: boolean
@@ -33,9 +34,11 @@ interface Store {
   setMessages: (
     messages: ChatMessage[] | ((prevMessages: ChatMessage[]) => ChatMessage[])
   ) => void
-  pendingQueue: { content: string; source: string; created_at: number }[]
+  pendingQueue: { content: string; source: string; created_at: number; task_id?: string }[]
   setPendingQueue: (
-    queue: { content: string; source: string; created_at: number }[] | ((prev: { content: string; source: string; created_at: number }[]) => { content: string; source: string; created_at: number }[])
+    queue:
+      | { content: string; source: string; created_at: number; task_id?: string }[]
+      | ((prev: { content: string; source: string; created_at: number; task_id?: string }[]) => { content: string; source: string; created_at: number; task_id?: string }[])
   ) => void
   chatInputRef: React.RefObject<HTMLTextAreaElement | null>
   selectedEndpoint: string
@@ -60,6 +63,12 @@ interface Store {
   setIsSessionsLoading: (isSessionsLoading: boolean) => void
   agentStatus: string
   setAgentStatus: (status: string) => void
+  tasks: KanbanTask[]
+  setTasks: (tasks: KanbanTask[] | ((prev: KanbanTask[]) => KanbanTask[])) => void
+  activeTab: 'chat' | 'kanban'
+  setActiveTab: (tab: 'chat' | 'kanban') => void
+  selectedTask: KanbanTask | null
+  setSelectedTask: (task: KanbanTask | null) => void
 }
 
 export const useStore = create<Store>()(
@@ -118,7 +127,16 @@ export const useStore = create<Store>()(
       setIsSessionsLoading: (isSessionsLoading) =>
         set(() => ({ isSessionsLoading })),
       agentStatus: '',
-      setAgentStatus: (agentStatus) => set(() => ({ agentStatus }))
+      setAgentStatus: (agentStatus) => set(() => ({ agentStatus })),
+      tasks: [],
+      setTasks: (tasks) =>
+        set((state) => ({
+          tasks: typeof tasks === 'function' ? tasks(state.tasks) : tasks,
+        })),
+      activeTab: 'chat',
+      setActiveTab: (activeTab) => set(() => ({ activeTab })),
+      selectedTask: null,
+      setSelectedTask: (task) => set(() => ({ selectedTask: task })),
     }),
     {
       name: 'endpoint-storage',

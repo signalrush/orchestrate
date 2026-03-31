@@ -4,11 +4,9 @@ import { useStore } from '@/store'
 import Messages from './Messages'
 import ScrollToBottom from '@/components/chat/ChatArea/ScrollToBottom'
 import { StickToBottom } from 'use-stick-to-bottom'
-import useTeamStream from '@/hooks/useTeamStream'
 import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 
 const MessageArea = () => {
-  useTeamStream()
   useAIChatStreamHandler()
   const { messages } = useStore()
   const pendingQueue = useStore((state) => state.pendingQueue)
@@ -16,7 +14,7 @@ const MessageArea = () => {
 
   return (
     <StickToBottom
-      className="relative mb-4 flex max-h-[calc(100vh-64px)] min-h-0 flex-grow flex-col"
+      className="relative mb-4 flex min-h-0 flex-grow flex-col"
       resize="smooth"
       initial="smooth"
     >
