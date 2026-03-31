@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS
+from orchestrate.orchestrate.api.server import app, AGENTS, SESSIONS, RUNS
 from orchestrate.core import Auto
 
 
@@ -56,7 +56,7 @@ def test_auto_without_api_url_has_no_api_mode():
 @pytest.mark.asyncio
 async def test_remind_via_api_posts_to_endpoint():
     """When Auto has api_url, remind() should use /agents/{to}/message with source=remind."""
-    from api.server import _process_agent_message
+    from orchestrate.api.server import _process_agent_message
     import inspect
 
     source = inspect.getsource(_process_agent_message)
@@ -125,7 +125,7 @@ async def test_session_runs_return_source_field(client):
 
 def test_api_env_vars_in_sdk_options():
     """API server should pass ORCHESTRATE env vars to ClaudeAgentOptions."""
-    from api.server import _process_agent_message
+    from orchestrate.api.server import _process_agent_message
     import inspect
 
     # Read the source to verify env vars are in the options

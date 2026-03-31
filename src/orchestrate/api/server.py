@@ -1,6 +1,6 @@
 """REST API server bridging agent-ui to orchestrate.
 
-Run: uvicorn api.server:app --port 7777
+Run: uvicorn orchestrate.api.server:app --port 7777
 """
 
 import asyncio

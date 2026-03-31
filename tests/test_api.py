@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
+from orchestrate.orchestrate.api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
 
 
 @pytest.fixture(autouse=True)
@@ -321,8 +321,8 @@ async def test_ephemeral_run_happy_path(client):
         yield assistant_msg
         yield result_msg
 
-    with patch("api.server.query", side_effect=mock_query):
-        with patch("api.server._summarize", return_value="The answer is 42."):
+    with patch("orchestrate.api.server.query", side_effect=mock_query):
+        with patch("orchestrate.api.server._summarize", return_value="The answer is 42."):
             resp = await client.post(
                 "/agents/orchestrator/runs",
                 json={"task": "What is the answer?"},
@@ -373,7 +373,7 @@ async def test_context_empty_search(client):
 @pytest.mark.asyncio
 async def test_kanban_events_on_agent_message(client):
     """post_agent_message emits TaskCreated → TaskStarted → TaskCompleted with matching task_id."""
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     emitted: list[dict] = []
     original_emit = srv._emit
@@ -422,7 +422,7 @@ async def test_kanban_events_on_agent_message(client):
 @pytest.mark.asyncio
 async def test_user_messages_do_not_create_kanban_events(client):
     """source='user' messages must NOT emit TaskCreated/TaskStarted/TaskCompleted."""
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     emitted = []
     original_emit = srv._emit
@@ -450,7 +450,7 @@ async def test_user_messages_do_not_create_kanban_events(client):
     assert "TaskCompleted" not in event_names
 
     srv._emit = original_emit
-    from api.server import AGENT_QUEUES, AGENT_WORKERS
+    from orchestrate.api.server import AGENT_QUEUES, AGENT_WORKERS
     AGENT_QUEUES.pop("kb-user-agent", None)
     worker = AGENT_WORKERS.pop("kb-user-agent", None)
     if worker and not worker.done():
@@ -475,14 +475,14 @@ async def _drain_worker(agent_name: str, timeout: float = 2.0):
 async def test_load_agent_definitions_unicode_error_skips_file():
     import pathlib
     import tempfile
-    from api.server import _load_agent_definitions
+    from orchestrate.api.server import _load_agent_definitions
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmppath = pathlib.Path(tmpdir)
         (tmppath / "valid.md").write_text("---\nname: myagent\ndescription: test\n---\nDo stuff")
         (tmppath / "bad.md").write_bytes(b"\xff\xfe bad \x00")
 
-        with patch("api.server.Path") as MockPath:
+        with patch("orchestrate.api.server.Path") as MockPath:
             mock_dir = MagicMock()
             mock_dir.is_dir.return_value = True
             mock_dir.glob.return_value = [tmppath / "valid.md", tmppath / "bad.md"]
@@ -514,7 +514,7 @@ async def test_agent_worker_malformed_item_worker_dies_then_restarts(client):
 
     # Now patch _process_agent_message and send a real message
     # _ensure_agent_worker will restart the worker
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     async def fake_process(msg, source, name, session_id, config, resume_id, run_id):
         return ("response", None)
@@ -536,7 +536,7 @@ async def test_agent_worker_malformed_item_worker_dies_then_restarts(client):
 
 @pytest.mark.asyncio
 async def test_agent_worker_process_exception_emits_task_failed(client):
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     emitted = []
     original_emit = srv._emit
@@ -594,7 +594,7 @@ async def test_agent_worker_process_exception_emits_task_failed(client):
 @pytest.mark.asyncio
 async def test_reregister_agent_worker_uses_updated_config(client):
     # Documents bug B3: worker's INSERT OR REPLACE overwrites DB with old config
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     captured_models = []
 
@@ -681,7 +681,7 @@ async def test_search_context_pinned_entry_does_not_bypass_query_filter(client):
 
 @pytest.mark.asyncio
 async def test_register_agent_with_model_as_dict_does_not_cause_type_error(client):
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     resp = await client.post("/agents", json={
         "name": "dict-model-agent",
@@ -726,8 +726,8 @@ async def test_ephemeral_run_schema_without_properties_key_does_not_crash(client
         yield assistant_msg
         yield result_msg
 
-    with patch("api.server.query", side_effect=mock_query):
-        with patch("api.server._summarize", return_value="a string result"):
+    with patch("orchestrate.api.server.query", side_effect=mock_query):
+        with patch("orchestrate.api.server._summarize", return_value="a string result"):
             resp = await client.post(
                 "/agents/orchestrator/runs",
                 json={"task": "return a string", "schema": {"type": "string"}},
@@ -762,7 +762,7 @@ async def test_delete_nonexistent_agent_returns_404(client):
 
 @pytest.mark.asyncio
 async def test_post_agent_message_self_alias_and_title_field(client):
-    import api.server as srv
+    import orchestrate.api.server as srv
 
     emitted = []
     original_emit = srv._emit
@@ -892,7 +892,7 @@ async def test_delete_context_nonexistent_returns_404(client):
 
 @pytest.mark.asyncio
 async def test_sse_emit_reaches_subscriber():
-    from api.server import TEAM_SSE_SUBSCRIBERS, _emit
+    from orchestrate.api.server import TEAM_SSE_SUBSCRIBERS, _emit
 
     q = asyncio.Queue()
     TEAM_SSE_SUBSCRIBERS.append(q)
@@ -908,9 +908,9 @@ async def test_sse_emit_reaches_subscriber():
 
 @pytest.mark.asyncio
 async def test_load_agent_definitions_no_agents_dir():
-    from api.server import _load_agent_definitions
+    from orchestrate.api.server import _load_agent_definitions
 
-    with patch("api.server.Path") as MockPath:
+    with patch("orchestrate.api.server.Path") as MockPath:
         mock_dir = MagicMock()
         mock_dir.is_dir.return_value = False
         # Path.home() / ".claude" / "agents" — 2 __truediv__ calls
@@ -923,13 +923,13 @@ async def test_load_agent_definitions_no_agents_dir():
 async def test_load_agent_definitions_no_frontmatter_skipped():
     import pathlib
     import tempfile
-    from api.server import _load_agent_definitions
+    from orchestrate.api.server import _load_agent_definitions
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmppath = pathlib.Path(tmpdir)
         (tmppath / "nofrontmatter.md").write_text("This has no YAML frontmatter")
 
-        with patch("api.server.Path") as MockPath:
+        with patch("orchestrate.api.server.Path") as MockPath:
             mock_dir = MagicMock()
             mock_dir.is_dir.return_value = True
             mock_dir.glob.return_value = [tmppath / "nofrontmatter.md"]
