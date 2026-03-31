@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from orchestrate.orchestrate.api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
+from orchestrate.api.server import app, AGENTS, SESSIONS, RUNS, EPHEMERAL_TASKS, _db, AGENT_QUEUES, AGENT_WORKERS
 
 
 @pytest.fixture(autouse=True)

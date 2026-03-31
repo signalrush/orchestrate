@@ -461,7 +461,10 @@ async def team_events():
                 event_str = await q.get()
                 yield event_str + '\n'
         finally:
-            TEAM_SSE_SUBSCRIBERS.remove(q)
+            try:
+                TEAM_SSE_SUBSCRIBERS.remove(q)
+            except ValueError:
+                pass
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -545,7 +548,10 @@ async def post_agent_message(
         "task_id": task_id if source == "system" else None,
     })
 
-    result = await future
+    try:
+        result = await asyncio.wait_for(future, timeout=300)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "timed out waiting for agent response"}, status_code=504)
     return JSONResponse({"content": result, "status": "ok"})
 
 
@@ -1193,5 +1199,8 @@ async def post_message(
         "task_id": task_id if source == "system" else None,
     })
 
-    result = await future
+    try:
+        result = await asyncio.wait_for(future, timeout=300)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "timed out waiting for agent response"}, status_code=504)
     return JSONResponse({"content": result, "status": "ok"})

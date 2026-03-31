@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { getSessionAPI, getAllSessionsAPI } from '@/api/os'
 import { useStore } from '../store'
 import { toast } from 'sonner'
@@ -30,6 +30,7 @@ const useSessionLoader = () => {
   const authToken = useStore((state) => state.authToken)
   const setIsSessionsLoading = useStore((state) => state.setIsSessionsLoading)
   const setSessionsData = useStore((state) => state.setSessionsData)
+  const getSessionCounterRef = useRef(0)
 
   const getSessions = useCallback(
     async ({ entityType, agentId, teamId, dbId }: LoaderArgs) => {
@@ -71,6 +72,9 @@ const useSessionLoader = () => {
       )
         return
 
+      getSessionCounterRef.current += 1
+      const requestId = getSessionCounterRef.current
+
       try {
         const response: SessionResponse = await getSessionAPI(
           selectedEndpoint,
@@ -79,6 +83,8 @@ const useSessionLoader = () => {
           dbId ?? '',
           authToken
         )
+        // Discard stale responses from superseded requests
+        if (requestId !== getSessionCounterRef.current) return null
         if (response) {
           if (Array.isArray(response)) {
             const messagesFor = response.flatMap((run) => {

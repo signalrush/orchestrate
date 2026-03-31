@@ -45,7 +45,7 @@ const useAIChatStreamHandler = () => {
       const newMessages = [...prevMessages]
       const lastMessage = newMessages[newMessages.length - 1]
       if (lastMessage && lastMessage.role === 'agent') {
-        lastMessage.streamingError = true
+        newMessages[newMessages.length - 1] = { ...lastMessage, streamingError: true }
       }
       return newMessages
     })
@@ -185,10 +185,10 @@ const useAIChatStreamHandler = () => {
           const newMessages = [...prevMessages]
           const lastMessage = newMessages[newMessages.length - 1]
           if (lastMessage && lastMessage.role === 'agent') {
-            lastMessage.tool_calls = processChunkToolCalls(
-              chunk,
-              lastMessage.tool_calls
-            )
+            newMessages[newMessages.length - 1] = {
+              ...lastMessage,
+              tool_calls: processChunkToolCalls(chunk, lastMessage.tool_calls)
+            }
           }
           return newMessages
         })
@@ -234,37 +234,22 @@ const useAIChatStreamHandler = () => {
               prevMessages[prevMessages.length - 1]?.content || '',
               ''
             )
-            lastMessage.content += uniqueContent
-
-            // Handle tool calls streaming
-            lastMessage.tool_calls = processChunkToolCalls(
-              chunk,
-              lastMessage.tool_calls
-            )
-            if (chunk.extra_data?.reasoning_steps) {
-              lastMessage.extra_data = {
-                ...lastMessage.extra_data,
-                reasoning_steps: chunk.extra_data.reasoning_steps
-              }
-            }
-
-            if (chunk.extra_data?.references) {
-              lastMessage.extra_data = {
-                ...lastMessage.extra_data,
-                references: chunk.extra_data.references
-              }
-            }
-
-            lastMessage.created_at =
-              chunk.created_at ?? lastMessage.created_at
-            if (chunk.images) {
-              lastMessage.images = chunk.images
-            }
-            if (chunk.videos) {
-              lastMessage.videos = chunk.videos
-            }
-            if (chunk.audio) {
-              lastMessage.audio = chunk.audio
+            const updatedExtraData = chunk.extra_data?.reasoning_steps || chunk.extra_data?.references
+              ? {
+                  ...lastMessage.extra_data,
+                  ...(chunk.extra_data?.reasoning_steps ? { reasoning_steps: chunk.extra_data.reasoning_steps } : {}),
+                  ...(chunk.extra_data?.references ? { references: chunk.extra_data.references } : {})
+                }
+              : lastMessage.extra_data
+            newMessages[newMessages.length - 1] = {
+              ...lastMessage,
+              content: lastMessage.content + uniqueContent,
+              tool_calls: processChunkToolCalls(chunk, lastMessage.tool_calls),
+              extra_data: updatedExtraData,
+              created_at: chunk.created_at ?? lastMessage.created_at,
+              images: chunk.images ?? lastMessage.images,
+              videos: chunk.videos ?? lastMessage.videos,
+              audio: chunk.audio ?? lastMessage.audio,
             }
           } else if (
             lastMessage &&
@@ -273,18 +258,22 @@ const useAIChatStreamHandler = () => {
             chunk.content !== null
           ) {
             const jsonBlock = getJsonMarkdown(chunk?.content)
-
-            lastMessage.content += jsonBlock
+            newMessages[newMessages.length - 1] = {
+              ...lastMessage,
+              content: lastMessage.content + jsonBlock,
+            }
           } else if (
             lastMessage &&
             chunk.response_audio?.transcript &&
             typeof chunk.response_audio?.transcript === 'string'
           ) {
             const transcript = chunk.response_audio.transcript
-            lastMessage.response_audio = {
-              ...lastMessage.response_audio,
-              transcript:
-                lastMessage.response_audio?.transcript + transcript
+            newMessages[newMessages.length - 1] = {
+              ...lastMessage,
+              response_audio: {
+                ...lastMessage.response_audio,
+                transcript: lastMessage.response_audio?.transcript + transcript
+              }
             }
           }
           return newMessages
@@ -300,9 +289,12 @@ const useAIChatStreamHandler = () => {
             const existingSteps =
               lastMessage.extra_data?.reasoning_steps ?? []
             const incomingSteps = chunk.extra_data?.reasoning_steps ?? []
-            lastMessage.extra_data = {
-              ...lastMessage.extra_data,
-              reasoning_steps: [...existingSteps, ...incomingSteps]
+            newMessages[newMessages.length - 1] = {
+              ...lastMessage,
+              extra_data: {
+                ...lastMessage.extra_data,
+                reasoning_steps: [...existingSteps, ...incomingSteps]
+              }
             }
           }
           return newMessages
@@ -316,9 +308,12 @@ const useAIChatStreamHandler = () => {
           const lastMessage = newMessages[newMessages.length - 1]
           if (lastMessage && lastMessage.role === 'agent') {
             if (chunk.extra_data?.reasoning_steps) {
-              lastMessage.extra_data = {
-                ...lastMessage.extra_data,
-                reasoning_steps: chunk.extra_data.reasoning_steps
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                extra_data: {
+                  ...lastMessage.extra_data,
+                  reasoning_steps: chunk.extra_data.reasoning_steps
+                }
               }
             }
           }

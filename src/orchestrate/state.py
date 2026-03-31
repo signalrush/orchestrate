@@ -38,7 +38,7 @@ def _load_state() -> Dict[str, Any]:
             if not content:
                 return {}
             return json.loads(content)
-    except OSError:
+    except (OSError, json.JSONDecodeError):
         return {}
 
 

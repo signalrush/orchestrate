@@ -22,32 +22,36 @@ const ChatInput = () => {
     const currentMessage = inputMessage
     setInputMessage('')
 
-    try {
-      const endpointUrl = constructEndpointUrl(selectedEndpoint)
-      const agentId = selectedAgent || 'orchestrator'
+    const endpointUrl = constructEndpointUrl(selectedEndpoint)
+    const agentId = selectedAgent || 'orchestrator'
 
-      if (sessionId) {
-        // Existing session: fire-and-forget
-        const formData = new FormData()
-        formData.append('message', currentMessage)
-        formData.append('source', 'user')
-        formData.append('session_id', sessionId)
-        fetch(`${endpointUrl}/agents/${agentId}/message`, {
-          method: 'POST',
-          body: formData,
-        }).catch(() => {})
-      } else {
-        // New session: create via /runs (don't read stream — team SSE delivers events)
-        const formData = new FormData()
-        formData.append('message', currentMessage)
-        formData.append('stream', 'false')
-        fetch(`${endpointUrl}/agents/${agentId}/runs`, {
-          method: 'POST',
-          body: formData,
-        }).catch(() => {})
-      }
-    } catch (error) {
-      toast.error(`Error: ${error instanceof Error ? error.message : String(error)}`)
+    if (sessionId) {
+      // Existing session: fire-and-forget
+      const formData = new FormData()
+      formData.append('message', currentMessage)
+      formData.append('source', 'user')
+      formData.append('session_id', sessionId)
+      fetch(`${endpointUrl}/agents/${agentId}/message`, {
+        method: 'POST',
+        body: formData,
+      }).catch((error) => {
+        console.error('Failed to send message:', error)
+        setInputMessage(currentMessage)
+        toast.error(`Failed to send message: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    } else {
+      // New session: create via /runs (don't read stream — team SSE delivers events)
+      const formData = new FormData()
+      formData.append('message', currentMessage)
+      formData.append('stream', 'false')
+      fetch(`${endpointUrl}/agents/${agentId}/runs`, {
+        method: 'POST',
+        body: formData,
+      }).catch((error) => {
+        console.error('Failed to start run:', error)
+        setInputMessage(currentMessage)
+        toast.error(`Failed to start run: ${error instanceof Error ? error.message : String(error)}`)
+      })
     }
   }
 

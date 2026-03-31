@@ -13,6 +13,7 @@ export default function KanbanView() {
   const setSelectedTask = useStore((state) => state.setSelectedTask)
   const setMessages = useStore((state) => state.setMessages)
   const [chatPanelWidth, setChatPanelWidth] = useState(320)
+  const dragListenersRef = useRef<{ onMouseMove: (ev: MouseEvent) => void; onMouseUp: () => void } | null>(null)
 
   const [agentId, setAgentId] = useQueryState('agent')
   const [teamId, setTeamId] = useQueryState('team')
@@ -72,6 +73,17 @@ export default function KanbanView() {
     setSelectedTask(null)
   }, [setSelectedTask])
 
+  // Clean up any dangling drag listeners on unmount
+  useEffect(() => {
+    return () => {
+      if (dragListenersRef.current) {
+        document.removeEventListener('mousemove', dragListenersRef.current.onMouseMove)
+        document.removeEventListener('mouseup', dragListenersRef.current.onMouseUp)
+        dragListenersRef.current = null
+      }
+    }
+  }, [])
+
   const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     const startX = e.clientX
@@ -86,8 +98,10 @@ export default function KanbanView() {
     const onMouseUp = () => {
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
+      dragListenersRef.current = null
     }
 
+    dragListenersRef.current = { onMouseMove, onMouseUp }
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
   }, [chatPanelWidth])

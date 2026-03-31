@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from orchestrate.orchestrate.api.server import app, AGENTS, SESSIONS, RUNS
+from orchestrate.api.server import app, AGENTS, SESSIONS, RUNS
 from orchestrate.core import Auto
 
 
