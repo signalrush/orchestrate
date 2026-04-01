@@ -261,6 +261,8 @@ async def _process_agent_message(message, source, agent_name, session_id, config
     accumulated_text = ""
     tools_used = []
     model = config.get("model", DEFAULT_MODEL)
+    if isinstance(model, dict):
+        model = model.get("model", DEFAULT_MODEL)
     if model == "inherit":
         model = DEFAULT_MODEL
     cwd = config.get("cwd", os.getcwd())
@@ -668,7 +670,7 @@ async def run_agent(
 
 @app.post("/agents/{agent_name}/runs")
 async def ephemeral_run_json(agent_name: str, request: Request):
-    """Ephemeral task execution — accepts JSON body with 'task' field.
+    """Ephemeral task execution — accepts JSON or FormData body.
 
     POST {"task": "...", "schema": {...}, "context": [...]}
     Returns {"run_id": "...", "status": "ok"} immediately.
@@ -677,8 +679,13 @@ async def ephemeral_run_json(agent_name: str, request: Request):
     if agent_name not in AGENTS:
         return JSONResponse({"error": "agent not found"}, status_code=404)
 
-    body = await request.json()
-    task = body.get("task")
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        body = await request.json()
+    else:
+        form = await request.form()
+        body = dict(form)
+    task = body.get("task") or body.get("message")
     if not task:
         return JSONResponse({"error": "task is required"}, status_code=400)
 
@@ -784,6 +791,8 @@ async def _execute_ephemeral_run(
 
     try:
         model = config.get("model", DEFAULT_MODEL)
+        if isinstance(model, dict):
+            model = model.get("model", DEFAULT_MODEL)
         if model == "inherit":
             model = DEFAULT_MODEL
         cwd = config.get("cwd", os.getcwd())

@@ -40,17 +40,17 @@ const ChatInput = () => {
         toast.error(`Failed to send message: ${error instanceof Error ? error.message : String(error)}`)
       })
     } else {
-      // New session: create via /runs (don't read stream — team SSE delivers events)
+      // New session: create via /sessions (team SSE delivers events)
       const formData = new FormData()
       formData.append('message', currentMessage)
       formData.append('stream', 'false')
-      fetch(`${endpointUrl}/agents/${agentId}/runs`, {
+      fetch(`${endpointUrl}/agents/${agentId}/sessions`, {
         method: 'POST',
         body: formData,
       }).catch((error) => {
-        console.error('Failed to start run:', error)
+        console.error('Failed to start session:', error)
         setInputMessage(currentMessage)
-        toast.error(`Failed to start run: ${error instanceof Error ? error.message : String(error)}`)
+        toast.error(`Failed to start session: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
   }
